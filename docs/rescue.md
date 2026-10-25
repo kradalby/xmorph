@@ -22,26 +22,29 @@ broken on disk without rebooting from external media.
 - The fix doesn't need a pivoted environment — just SSH into the running
   OS.
 
-## Quick start: rescue with Tailscale SSH
+## Quick start: SSH over Tailscale
 
 ```sh
 sudo xmorph pivot \
   --image docker.io/library/alpine:latest \
+  --entrypoint /usr/local/bin/xmorph --cmd idle \
+  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey tskey-auth-xxxxx \
   --force
 ```
 
 What this does:
 
-1. Pulls Alpine + the Tailscale image into a tmpfs in RAM
+1. Pulls Alpine into a tmpfs in RAM and copies the xmorph binary into it
 2. On a systemd host, relocates itself into a transient scope so your SSH
    session (or a `run0`/`systemd-run` wrapper) can't take it down when it
    ends — see [Surviving your SSH session](#surviving-your-ssh-session)
-3. Coordinates with systemd / OpenRC / SysVinit to stop services
+3. Authenticates the embedded tsnet node before stopping services; a failed
+   login aborts while the original OS is still running
 4. `pivot_root`s into the new rootfs
-5. Brings up Tailscale in the new rootfs; the node appears as
-   `<hostname>-xmorph` on your tailnet
-6. Mounts the old root at `/mnt/oldroot`
+5. Reopens the saved tsnet state and starts ordinary SSH; the node appears
+   as `<hostname>-xmorph` on your tailnet
+6. Keeps the old root at `/mnt/oldroot` and waits in `xmorph idle`
 
 Your SSH session drops when the pivot tears down the old OS's networking —
 that's expected. You reconnect to the rescue node over Tailscale.
@@ -52,10 +55,21 @@ From your laptop:
 ssh root@<hostname>-xmorph
 ```
 
-If the host had Tailscale running before xmorph started, the rescue
-node inherits the host's tailnet identity (same machine key, same ACLs,
-same MagicDNS name) thanks to state migration — the `-xmorph` suffix
-just makes it visually obvious in the admin UI which mode you're in.
+The rescue node has its own identity; xmorph does not migrate the host's
+tailscaled state. Its tsnet state survives the pivot and exec, but lives in
+the temporary rootfs and is lost on reboot. The default name is
+`<hostname>-xmorph`; override it with `--tailscale.args=--hostname=rescue`.
+
+This is ordinary SSH with public-key or password authentication, not
+Tailscale SSH. The auth key enrolls the node; it does not enable SSH.
+Tailnet packet policy must allow the SSH port, and clients still need the
+configured SSH credentials. All accepted SSH logins run as root. The same
+server also listens on the host network interfaces.
+
+After the pivot, tailnet startup has a 30-second deadline. If control is
+unreachable and no cached network map can be used, xmorph logs the error
+and continues with kernel SSH and the entrypoint. Tailnet access is then
+unavailable for that rescue session; use the host's routable address.
 
 Use an [ephemeral auth key](https://tailscale.com/kb/1085/auth-keys)
 so the rescue node auto-deletes from your tailnet when xmorph exits.
@@ -110,7 +124,7 @@ apk add --no-cache \
   rsync curl wget rclone \
   vim less htop strace lsof tcpdump \
   openssh-client
-exec /bin/sh
+exec /usr/local/bin/xmorph idle
 ```
 
 ### Overlay layout
@@ -127,13 +141,14 @@ sudo xmorph pivot \
   --image docker.io/library/alpine:latest \
   --rootfs ./overlay/ \
   --entrypoint /entrypoint.sh \
+  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey tskey-auth-xxxxx \
   --force
 ```
 
 The image is cached at `/var/cache/xmorph` (override with
 `--cache-dir`). Subsequent pivots with the same base image skip the
-download and apk install, so the second pivot onward is instant.
+image download. The entrypoint still runs `apk add` after each pivot.
 
 For a fleet: pre-warm the cache on boot with `xmorph build` (see the
 [systemd integration](#systemd-integration) section).
@@ -145,13 +160,18 @@ Tailscale's hosted control plane, point `--tailscale.server` at it:
 
 ```sh
 sudo xmorph pivot --image alpine \
+  --entrypoint /usr/local/bin/xmorph --cmd idle \
+  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey <key-from-headscale> \
   --tailscale.server https://headscale.example.com \
   --force
 ```
 
-This appends `--login-server=https://headscale.example.com` to the
-`tailscale up` invocation in the new rootfs.
+The explicit control URL is used for both pre-pivot authentication and
+post-pivot tsnet startup. Put tags on the Headscale auth key and allow
+traffic to those tags in packet policy. Only `--hostname=NAME` is consumed
+from the legacy `--tailscale.args`; `--advertise-tags` and `--ssh` there do
+not configure tsnet or the SSH server.
 
 ## Rescue without Tailscale
 
@@ -161,6 +181,7 @@ on a serial console:
 ```sh
 # Plain SSH on port 22 with your key
 sudo xmorph pivot --image alpine \
+  --entrypoint /usr/local/bin/xmorph --cmd idle \
   --ssh.port 22 \
   --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --force
@@ -239,8 +260,9 @@ xmorph also notices when it's running over SSH:
   short grace window — `Ctrl-C` to abort. On those hosts, run it under a
   detachment mechanism of your own (`systemd-run`, `setsid`, `nohup`, `tmux`).
 
-Make sure you have a way back in before you pivot: set `--tailscale.authkey`
-or `--ssh.port`, or you'll lock yourself out. `--log-dir` (default
+Make sure you have a way back in before you pivot: configure SSH with
+`--ssh.authorized-keys` or `--ssh.password`, and add `--tailscale.authkey`
+if you need tailnet access. `--log-dir` (default
 `/var/log`) writes `xmorph.log` on the old root and flushes it into the new
 rootfs, so there's a breadcrumb trail either way.
 

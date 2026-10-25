@@ -147,7 +147,7 @@ in
       args = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Arguments for 'tailscale up' (default: --ssh --hostname=<host>-xmorph).";
+      description = "Legacy Tailscale arguments; only --hostname=NAME is used (default: <host>-xmorph).";
       };
     };
   };

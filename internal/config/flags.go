@@ -101,7 +101,7 @@ func bindTailscale(fs *pflag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.TailscaleImage, "tailscale.image", DefaultTailscaleImg, "deprecated: ignored under tsnet (kept for backward compatibility)")
 	fs.StringVar(&cfg.TailscaleAuthkey, "tailscale.authkey", "", "Tailscale auth key (starts Tailscale via tsnet)")
 	fs.StringVar(&cfg.TailscaleServer, "tailscale.server", "", "Tailscale coordination server URL (for Headscale)")
-	fs.StringVar(&cfg.TailscaleArgs, "tailscale.args", "", "extra arguments for tailscale up (default: --ssh --hostname=<host>-xmorph)")
+	fs.StringVar(&cfg.TailscaleArgs, "tailscale.args", "", "legacy Tailscale arguments; only --hostname=NAME is used (default: <host>-xmorph)")
 }
 
 // Normalize applies post-parse adjustments that the Zig version performs

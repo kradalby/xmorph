@@ -127,18 +127,21 @@ sudo xmorph pivot \
   --rootfs ./overlay/ \
   --entrypoint /install.sh \
   --tailscale.authkey tskey-auth-xxxxx \
+  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --watchdog-timeout 20m \
   --force
 ```
 
 - **`--tailscale.authkey`** joins the pivoted rootfs to your tailnet via
-  tsnet (userspace, so it survives losing the host's own networking).
-  Default `tailscale up` args are `--ssh --hostname=<host>-xmorph`, so the
-  host reappears as `<host>-xmorph` with Tailscale SSH while the installer
-  runs. Use `--tailscale.server` for a Headscale coordination server.
-  (Plain `--ssh.enable --ssh.authorized-keys` also starts an sshd in the
-  installer, but only helps if the rootfs still holds a routable address
-  after pivot — Tailscale doesn't depend on that.)
+  embedded tsnet as a separate rescue identity named `<host>-xmorph`.
+  Authentication happens before the pivot; the saved state is reopened
+  afterward. Use `--tailscale.server` for a Headscale control server, and
+  configure tags on the auth key rather than in `--tailscale.args`.
+- **`--ssh.authorized-keys`** enables ordinary SSH while the installer runs.
+  Connect with `ssh root@<host>-xmorph`; Tailscale SSH policy does not
+  replace SSH credentials. The server also listens on host network
+  interfaces. Both paths still require working underlying networking after
+  the pivot; tsnet does not replace routes or interface configuration.
 - **Surviving the disconnect is automatic on systemd.** Before it builds
   the rootfs, xmorph relocates itself into a transient systemd scope (via
   `StartTransientUnit`, like `systemd-run --scope`), so the launching SSH

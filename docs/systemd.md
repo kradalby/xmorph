@@ -21,6 +21,13 @@ itself is sub-second when you actually need it.
             package = xmorph.packages.x86_64-linux.default;
 
             images = [ "docker.io/library/alpine:latest" ];
+            entrypoint = "/usr/local/bin/xmorph";
+            command = [ "idle" ];
+
+            ssh = {
+              enable = true;
+              authorizedKeys = "ssh-ed25519 AAAA... your-key-here";
+            };
 
             tailscale = {
               enable = true;
@@ -42,6 +49,11 @@ The module installs two services:
 - `xmorph-pivot.service` — runs on `rescue.target` to pivot into the new rootfs
 
 Trigger with `sudo systemctl isolate rescue.target`.
+
+Replace the example public key with your own. The idle entrypoint keeps the
+rescue system running without a terminal. SSH uses the configured credentials
+over both the tailnet and host network; the Tailscale auth key only enrolls
+the rescue node. For Headscale, set `tailscale.server` to its control URL.
 
 ## Manual setup
 
@@ -70,6 +82,8 @@ sudo systemctl edit xmorph-pivot.service
 ExecStart=
 ExecStart=/usr/local/bin/xmorph pivot --systemd-mode --force \
   --image alpine:latest \
+  --entrypoint /usr/local/bin/xmorph --command idle \
+  --ssh.authorized-keys "ssh-ed25519 AAAA... your-key-here" \
   --tailscale.authkey tskey-auth-xxxxx
 ```
 
