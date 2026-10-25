@@ -2,8 +2,9 @@
 
 xmorph runs as a `rescue.target` unit: `systemctl isolate rescue.target`
 tears down normal services and pivots into the configured rootfs. A
-companion cache-warm unit runs on `multi-user.target` so the pivot
-itself is sub-second when you actually need it.
+companion unit runs `xmorph build` on `multi-user.target` to populate its
+build cache. Registry-image pivots do not reuse that cache and still need
+registry access.
 
 ## NixOS module
 
@@ -45,7 +46,7 @@ itself is sub-second when you actually need it.
 
 The module installs two services:
 
-- `xmorph-cache-warm.service` — runs on `multi-user.target` to pre-pull images
+- `xmorph-cache-warm.service` — runs on `multi-user.target` to populate the build cache
 - `xmorph-pivot.service` — runs on `rescue.target` to pivot into the new rootfs
 
 Trigger with `sudo systemctl isolate rescue.target`.
@@ -94,9 +95,9 @@ already stopped services when entering `rescue.target`). The unit's
 
 ## Caching
 
-xmorph caches built rootfs images at the configured cache directory
+`xmorph build` caches assembled images at the configured cache directory
 (default `/var/cache/xmorph`; override with `--cache-dir` or
 `CACHE_DIRECTORY`). The cache key is derived from the normalized layer
-list — repeated `pivot` or `build` calls with the same layers skip
-image pulls and layer merges entirely. Pre-warm with `xmorph build`
-(no output flags).
+list — repeated `build` calls with the same layers can skip image pulls
+and layer merges. `pivot` does not consult this cache: registry-image
+pivots still require registry access even after the cache-warm unit succeeds.

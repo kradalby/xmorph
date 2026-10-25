@@ -146,12 +146,10 @@ sudo xmorph pivot \
   --force
 ```
 
-The image is cached at `/var/cache/xmorph` (override with
-`--cache-dir`). Subsequent pivots with the same base image skip the
-image download. The entrypoint still runs `apk add` after each pivot.
-
-For a fleet: pre-warm the cache on boot with `xmorph build` (see the
-[systemd integration](#systemd-integration) section).
+`xmorph build` caches assembled images at `/var/cache/xmorph` (override with
+`--cache-dir`). Registry-image pivots do not read that cache and still need
+registry access, even after a successful build. The entrypoint also runs
+`apk add` after each pivot.
 
 ## Headscale
 
@@ -324,18 +322,18 @@ tail /srv/xmorph/xmorph.log /srv/xmorph/entrypoint.log
 
 ## systemd integration
 
-For an always-available rescue path that you can trigger remotely without
-rebuilding the image every time, install xmorph as a `rescue.target`
-unit. See [systemd integration](systemd.md) for the unit file and NixOS
-module. Once installed:
+For a configured rescue action that you can trigger remotely, install
+xmorph as a `rescue.target` unit. See [systemd integration](systemd.md) for
+the unit file and NixOS module. Once installed:
 
 ```sh
 sudo systemctl isolate rescue.target
 ```
 
-pivots into the configured rescue rootfs. A `xmorph-cache-warm.service`
-runs on `multi-user.target` to pre-pull the image during normal boot, so
-the pivot itself is sub-second when you actually need it.
+pivots into the configured rescue rootfs. The companion
+`xmorph-cache-warm.service` populates the build cache during normal boot.
+Registry-image pivots still pull from the registry; prewarming does not
+make them offline or guarantee a particular startup time.
 
 ## See also
 

@@ -101,7 +101,7 @@ in
     warmupBuildCache = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Pull images and build rootfs on boot so pivot is instant.";
+      description = "Populate the build cache on boot; registry-image pivots do not reuse it.";
     };
 
     ssh = {
