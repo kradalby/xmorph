@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
+    headscale.url = "github:juanfont/headscale/2d220b2eb8be8d31ed603000d0b0be02c2cd94d0";
+    headscale.inputs.flake-utils.follows = "flake-utils";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
@@ -10,7 +12,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, git-hooks }:
+  outputs = { self, nixpkgs, flake-utils, git-hooks, headscale }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -270,9 +272,10 @@
           nixos-lifecycle-exit-reboots = lifecycleTests.exit-reboots;
           nixos-lifecycle-preflight = lifecycleTests.shell-refused-preflight;
 
-          # NixOS VM test: headscale integration (offline, ~2-3 min)
+          # Real pivot and SSH against the upstream Headscale test kit.
           nixos-headscale = import ./nix/tests/headscale.nix {
-            inherit pkgs;
+            inherit pkgs headscale;
+            xmorph-module = self.nixosModules.default;
             lib = pkgs.lib;
             xmorph-package = xmorph;
           };

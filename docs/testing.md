@@ -63,3 +63,55 @@ container run --rm --cap-add ALL \
 require; mounting `$HOME/go/pkg/mod` read-only reuses your module cache so
 the run is offline and fast. This is a convenience for local development —
 CI relies on the NixOS VM test in tier 2, not on `container`.
+
+## Headscale and post-pivot SSH
+
+The `nixos-headscale` check uses the published Headscale `testkit` and
+`testkit-peer` modules pinned in `flake.nix`, with Headscale's independent
+nixpkgs/Go toolchain. The xmorph node uses the normal package and NixOS
+service module. It performs a real `pivot_root` and execs `xmorph --init`;
+SSH commands must read a marker that exists only in the new rootfs.
+A DNS resolver on the control VM survives the pivot, using addresses derived
+from the test network rather than hard-coded hosts entries. The kit supplies
+HTTP control and self-signed, `InsecureForTests` DERP; no application TLS
+certificate or production trust override is involved.
+
+Run on Linux with access to `/dev/kvm` and Nix's `kvm` system feature:
+
+```sh
+nix build -L .#checks.x86_64-linux.nixos-headscale
+nix run .#build
+```
+
+The VM check exercises:
+
+- Invalid auth keys and unavailable control: the real service aborts before
+  pivot, leaving the original OS usable; a valid key subsequently succeeds.
+- A tagged rescue identity, custom hostname and control URL; pre-pivot tsnet
+  state is reopened after exec, with a single registered node and private
+  state directory. The consumed init configuration is removed.
+- Actual IPv4/IPv6 SSH commands over a proven direct path and forced DERP,
+  plus the kernel listener on the configured port. Password
+  and public-key logins succeed; wrong passwords and unrelated keys fail
+  with authentication errors, followed by a successful control operation.
+- A live tag-based packet policy denying the outsider while the operator
+  still executes commands. Restoring policy restores the denied operation.
+- Control-server restart, direct application access during the outage, DERP
+  recovery, and unchanged node ID, node key and addresses.
+
+Scope follows the application: `postpivot.Run` calls `tsnet.Listen` through
+`StartSSHServer`. Passwords and authorized keys authorize root shells; SSH
+usernames are not mapped to local accounts. This is ordinary SSH, not
+Tailscale SSH. The `ServeSSH`/`PostPivot` helpers using `ListenSSH` have no
+production caller. There are no WhoIs calls, application capability grants,
+Serve/Funnel, HTTPS certificate requests, subnet routes or exit nodes to test.
+Tags come from the auth key; only hostname is interpreted from the legacy
+`--tailscale.args` string, not `--advertise-tags` or `--ssh`.
+
+The service requires root for mounts and pivot and has no unprivileged
+sandbox; the test preserves those production privileges. Adding an
+unprivileged tsnet service would not model this application. Persistence here
+means the pre-authentication-to-init exec boundary and control restart, not
+survival of reboot: the rescue root and its state live in tmpfs. Cloud-only
+Tailscale SSH check-mode/SSO and public HTTPS issuance are not reproduced by
+the local kit and are not exercised by the active application path.
