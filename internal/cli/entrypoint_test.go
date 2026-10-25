@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"go.calculon.tech/xmorph/internal/config"
 	"go.calculon.tech/xmorph/internal/passphrase"
 	"go.calculon.tech/xmorph/internal/postpivot"
+	"golang.org/x/crypto/ssh"
 )
 
 // The last line of defence before anything destructive happens. A bare shell
@@ -72,11 +74,17 @@ func TestEntrypointRefusalNamesTheFix(t *testing.T) {
 func TestEnsureSSHUsable(t *testing.T) {
 	enabled := true
 	disabled := false
+	signer, err := ssh.NewSignerFromKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := string(ssh.MarshalAuthorizedKey(signer.PublicKey()))
 	for _, tc := range []struct {
 		name          string
 		cfg           config.Config
 		wantGenerated bool
 		wantPassword  string // "" means "whatever was generated"
+		wantErr       string
 	}{
 		{name: "ssh off", cfg: config.Config{}},
 		{name: "ssh explicitly off", cfg: config.Config{SSHEnable: &disabled}},
@@ -94,7 +102,52 @@ func TestEnsureSSHUsable(t *testing.T) {
 			// Keys are enough on their own; generating a password here would
 			// weaken a setup that deliberately has no password to guess.
 			name: "authorized keys, no password invented",
-			cfg:  config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: "ssh-ed25519 AAAA"},
+			cfg:  config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: authorized},
+		},
+		{
+			name:          "comment-only keys generate a usable password",
+			cfg:           config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: "# no keys\n"},
+			wantGenerated: true,
+		},
+		{
+			name:          "whitespace-only keys generate a usable password",
+			cfg:           config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: " \t\n"},
+			wantGenerated: true,
+		},
+		{
+			name:         "comment-only keys with a password",
+			cfg:          config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: "# no keys\n", SSHPassword: "hunter2"},
+			wantPassword: "hunter2",
+		},
+		{
+			name:         "valid keys and password",
+			cfg:          config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: authorized, SSHPassword: "hunter2"},
+			wantPassword: "hunter2",
+		},
+		{
+			name:    "malformed keys",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: "not-a-key"},
+			wantErr: "line 1",
+		},
+		{
+			name:    "malformed keys also reject a valid password",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: "not-a-key", SSHPassword: "hunter2"},
+			wantErr: "line 1",
+		},
+		{
+			name:    "valid key does not hide malformed key",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: authorized + "not-a-key"},
+			wantErr: "line 2",
+		},
+		{
+			name:    "restricted valid key",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: `command="/bin/false" ` + authorized},
+			wantErr: "unsupported authorized_keys options",
+		},
+		{
+			name:    "plain key and password do not hide restricted key",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: authorized + "no-pty " + authorized, SSHPassword: "hunter2"},
+			wantErr: "unsupported authorized_keys options",
 		},
 		// SSHEnabled() is implied by any other ssh.* flag, so this is on too.
 		{
@@ -105,6 +158,15 @@ func TestEnsureSSHUsable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ensureSSHUsable(&tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ensureSSHUsable() error = %v, want %q", err, tc.wantErr)
+				}
+				if got != "" || tc.cfg.SSHPasswordGenerated {
+					t.Fatal("invalid credentials must not generate a fallback password")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("ensureSSHUsable() error: %v", err)
 			}

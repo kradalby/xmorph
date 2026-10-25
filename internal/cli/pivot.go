@@ -574,7 +574,11 @@ func ensureSSHUsable(cfg *config.Config) (generated string, err error) {
 	if !cfg.SSHEnabled() {
 		return "", nil
 	}
-	if cfg.SSHPassword != "" || cfg.SSHAuthorizedKeys != "" {
+	keys, err := postpivot.ParseAuthorizedKeys(cfg.SSHAuthorizedKeys)
+	if err != nil {
+		return "", fmt.Errorf("invalid SSH authorized_keys: %w", err)
+	}
+	if cfg.SSHPassword != "" || len(keys) != 0 {
 		return "", nil
 	}
 	pw, err := passphrase.New()

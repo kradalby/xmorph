@@ -93,6 +93,31 @@ func TestSSHPublicKeyExec(t *testing.T) {
 	}
 }
 
+func TestSSHRejectsAuthorizedKeyOptions(t *testing.T) {
+	signer, authorized := genClientKey(t)
+	for _, options := range []string{`command="/bin/false"`, `from="192.0.2.1"`, "no-pty", "restrict", `command="/bin/false",no-pty`} {
+		t.Run(options, func(t *testing.T) {
+			cfg := &SSHConfig{AuthorizedKeys: options + " " + authorized}
+			if _, err := buildServerConfig(cfg); err != nil {
+				if !strings.Contains(err.Error(), "unsupported authorized_keys options") {
+					t.Fatalf("unexpected configuration rejection: %v", err)
+				}
+				return
+			}
+
+			addr := serveSSHTest(t, cfg)
+			c := dialClient(t, addr, []ssh.AuthMethod{ssh.PublicKeys(signer)})
+			sess, err := c.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			out, err := sess.CombinedOutput("echo unrestricted-exec")
+			t.Fatalf("unsupported restrictions were accepted: arbitrary exec returned %q, error %v", out, err)
+		})
+	}
+}
+
 func TestSSHExitStatusPropagates(t *testing.T) {
 	signer, authorized := genClientKey(t)
 	addr := serveSSHTest(t, &SSHConfig{AuthorizedKeys: authorized})
@@ -160,7 +185,7 @@ func TestParseAuthorizedKeys(t *testing.T) {
 	_, other := genClientKey(t)
 	input := "# comment\n\n" + authorized + "\n" + other + "\n"
 
-	keys, err := parseAuthorizedKeys(input)
+	keys, err := ParseAuthorizedKeys(input)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -194,7 +219,7 @@ func TestStartSSHServerAddsTailnetListener(t *testing.T) {
 }
 
 func TestParseAuthorizedKeysBadLineReturnsError(t *testing.T) {
-	_, err := parseAuthorizedKeys("this-is-not-a-key")
+	_, err := ParseAuthorizedKeys("this-is-not-a-key")
 	if err == nil {
 		t.Fatal("expected error for bogus key")
 	}

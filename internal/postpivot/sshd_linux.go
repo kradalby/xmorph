@@ -122,7 +122,7 @@ func acceptLoop(ctx context.Context, ln net.Listener, sc *ssh.ServerConfig) erro
 func buildServerConfig(cfg *SSHConfig) (*ssh.ServerConfig, error) {
 	sc := &ssh.ServerConfig{}
 
-	keys, err := parseAuthorizedKeys(cfg.AuthorizedKeys)
+	keys, err := ParseAuthorizedKeys(cfg.AuthorizedKeys)
 	if err != nil {
 		return nil, fmt.Errorf("sshd: parse authorized_keys: %w", err)
 	}
@@ -159,16 +159,20 @@ func buildServerConfig(cfg *SSHConfig) (*ssh.ServerConfig, error) {
 	return sc, nil
 }
 
-func parseAuthorizedKeys(s string) ([]ssh.PublicKey, error) {
+// ParseAuthorizedKeys rejects key options because the server cannot enforce them.
+func ParseAuthorizedKeys(s string) ([]ssh.PublicKey, error) {
 	var out []ssh.PublicKey
 	for i, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		k, _, options, _, err := ssh.ParseAuthorizedKey([]byte(line))
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		}
+		if len(options) != 0 {
+			return nil, fmt.Errorf("line %d: unsupported authorized_keys options", i+1)
 		}
 		out = append(out, k)
 	}

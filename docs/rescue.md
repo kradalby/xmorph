@@ -191,11 +191,15 @@ sudo xmorph pivot --image alpine --force
 The `--ssh.enable` path stands up a small pure-Go OpenSSH server inside
 the pivoted rootfs on the given port (default 22) with an ephemeral
 ed25519 host key. Auth is public-key (from `--ssh.authorized-keys`,
-standard `authorized_keys` format, one per line) and/or password
+plain `authorized_keys` entries, one per line) and/or password
 (`--ssh.password`). Sessions run `/bin/sh` as root — the rescue rootfs
 has no user database.
 
-Give it neither and xmorph generates a root password: three random words
+Key options such as `command=`, `from=`, `restrict`, and `no-pty` are not
+supported. xmorph rejects them and malformed key entries before pivoting;
+it never silently drops restrictions. Blank lines and comments are ignored.
+
+Give it no usable keys or password and xmorph generates a root password: three random words
 from the EFF short wordlist, joined by hyphens, printed as a banner both
 before the pivot and again after it.
 
