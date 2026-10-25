@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -203,5 +204,39 @@ func TestTailscaleControlURLReachesPostPivotConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(data), cfg.TailscaleServer) {
 		t.Fatalf("post-pivot config lost control URL: %s", data)
+	}
+}
+
+func TestTailscaleHostnameReachesPostPivotConfig(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{name: "default", want: host + "-xmorph"},
+		{name: "custom", args: "--hostname=rescue", want: "rescue"},
+		{name: "legacy args without hostname", args: "--ssh", want: host + "-xmorph"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{TailscaleAuthkey: "tskey-auth-test", TailscaleArgs: tc.args}
+			pc := buildPostpivotConfig(&cfg, "/bin/true", nil)
+			data, err := json.Marshal(pc.Tailscale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Hostname string `json:"hostname"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Hostname != tc.want {
+				t.Fatalf("post-pivot config hostname = %q, want %q", got.Hostname, tc.want)
+			}
+		})
 	}
 }

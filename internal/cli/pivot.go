@@ -288,7 +288,7 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 		err := tsnetauth.PreAuth(ctx, tsnetauth.PreAuthOptions{
 			RootfsPath: cfg.WorkDir,
 			AuthKey:    cfg.TailscaleAuthkey,
-			Hostname:   helpers.TailscaleHostname(cfg),
+			Hostname:   pivotConfig.Tailscale.Hostname,
 			ControlURL: cfg.TailscaleServer,
 		})
 		if err != nil {
@@ -461,6 +461,7 @@ func buildPostpivotConfig(cfg *config.Config, entrypoint string, entryArgs []str
 	}
 	if cfg.TailscaleEnabled() {
 		pc.Tailscale = &postpivot.TSConfig{
+			Hostname:   helpers.TailscaleHostname(cfg),
 			ControlURL: cfg.TailscaleServer,
 			AuthKey:    cfg.TailscaleAuthkey,
 			Args:       cfg.TailscaleArgs,
