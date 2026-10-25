@@ -87,17 +87,24 @@ The VM check exercises:
 
 - Invalid auth keys and unavailable control: the real service aborts before
   pivot, leaving the original OS usable; a valid key subsequently succeeds.
-- A tagged rescue identity, custom hostname and control URL; pre-pivot tsnet
-  state is reopened after exec, with a single registered node and private
+- A tagged rescue identity, default hostname/MagicDNS name and custom control
+  URL; pre-pivot tsnet state is reopened after exec, with a single registered node and private
   state directory. The consumed init configuration is removed.
+  Unit tests also cover custom hostnames and legacy arguments without a hostname.
 - Actual IPv4/IPv6 SSH commands over a proven direct path and forced DERP,
   plus the kernel listener on the configured port. Password
   and public-key logins succeed; wrong passwords and unrelated keys fail
   with authentication errors, followed by a successful control operation.
 - A live tag-based packet policy denying the outsider while the operator
-  still executes commands. Restoring policy restores the denied operation.
+  still executes commands. The outsider retains peer visibility and DERP
+  ping access through a separate permitted port. Restoring policy restores
+  the denied SSH operation.
 - Control-server restart, direct application access during the outage, DERP
-  recovery, and unchanged node ID, node key and addresses.
+  recovery, a new online control connection, and unchanged node ID, node key
+  and addresses.
+- Control loss before init with saved tsnet state and cached network maps
+  disabled. The production binary runs in a separate root directory and must
+  start kernel SSH and its idle entrypoint despite the failed tailnet startup.
 
 Scope follows the application: `postpivot.Run` calls `tsnet.Listen` through
 `StartSSHServer`. Passwords and authorized keys authorize root shells; SSH
