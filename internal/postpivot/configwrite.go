@@ -61,8 +61,10 @@ type SSHConfig struct {
 // brings up tsnet pre-pivot and the state persists in /var/lib/tailscale);
 // the struct is kept so the JSON schema stays stable for ops scripts.
 type TSConfig struct {
-	AuthKey string `json:"authkey,omitempty"`
-	Args    string `json:"args,omitempty"`
+	// ControlURL must be supplied again because tsnet replaces persisted preferences.
+	ControlURL string `json:"control_url,omitempty"`
+	AuthKey    string `json:"authkey,omitempty"`
+	Args       string `json:"args,omitempty"`
 }
 
 // WriteConfig writes cfg as JSON to rootfsRoot + ConfigPath, creating

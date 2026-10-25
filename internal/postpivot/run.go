@@ -85,7 +85,8 @@ func Run(argv []string) int {
 	if cfg != nil && cfg.Tailscale != nil {
 		hostname := hostnameFromArgs(cfg.Tailscale.Args)
 		srv, err := tsnetauth.NewPostPivotServer(context.Background(), tsnetauth.PostPivotOptions{
-			Hostname: hostname,
+			Hostname:   hostname,
+			ControlURL: cfg.Tailscale.ControlURL,
 		})
 		if err != nil {
 			slog.Error("tsnet post-pivot", "err", err)

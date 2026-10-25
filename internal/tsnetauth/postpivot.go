@@ -12,14 +12,17 @@ import (
 type PostPivotOptions struct {
 	// Hostname must match what PreAuth used.
 	Hostname string
+	// ControlURL must match the server used by PreAuth; empty uses Tailscale.
+	ControlURL string
 }
 
 // NewPostPivotServer opens tsnet from the state persisted by PreAuth
 // and brings the node up on the tailnet. Caller owns Close.
 func NewPostPivotServer(ctx context.Context, opts PostPivotOptions) (*tsnet.Server, error) {
 	srv := &tsnet.Server{
-		Dir:      "/var/lib/tailscale",
-		Hostname: opts.Hostname,
+		Dir:        "/var/lib/tailscale",
+		Hostname:   opts.Hostname,
+		ControlURL: opts.ControlURL,
 	}
 	if _, err := srv.Up(ctx); err != nil {
 		srv.Close()

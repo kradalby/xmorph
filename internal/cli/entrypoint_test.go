@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -187,5 +188,20 @@ func TestGeneratedPasswordReachesPostPivotConfig(t *testing.T) {
 	}
 	if pc.SSH.Port != 22 {
 		t.Errorf("SSH port = %d, want the default 22", pc.SSH.Port)
+	}
+}
+
+func TestTailscaleControlURLReachesPostPivotConfig(t *testing.T) {
+	cfg := config.Config{
+		TailscaleAuthkey: "tskey-auth-test",
+		TailscaleServer:  "http://headscale",
+	}
+	pc := buildPostpivotConfig(&cfg, "/bin/true", nil)
+	data, err := json.Marshal(pc.Tailscale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), cfg.TailscaleServer) {
+		t.Fatalf("post-pivot config lost control URL: %s", data)
 	}
 }

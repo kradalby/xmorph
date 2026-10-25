@@ -461,8 +461,9 @@ func buildPostpivotConfig(cfg *config.Config, entrypoint string, entryArgs []str
 	}
 	if cfg.TailscaleEnabled() {
 		pc.Tailscale = &postpivot.TSConfig{
-			AuthKey: cfg.TailscaleAuthkey,
-			Args:    cfg.TailscaleArgs,
+			ControlURL: cfg.TailscaleServer,
+			AuthKey:    cfg.TailscaleAuthkey,
+			Args:       cfg.TailscaleArgs,
 		}
 	}
 	return pc

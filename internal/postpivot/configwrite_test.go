@@ -20,8 +20,9 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 			AuthorizedKeys: "ssh-ed25519 AAAA",
 		},
 		Tailscale: &TSConfig{
-			AuthKey: "tskey-auth-abc",
-			Args:    "--ssh --hostname=test-xmorph",
+			ControlURL: "http://headscale",
+			AuthKey:    "tskey-auth-abc",
+			Args:       "--ssh --hostname=test-xmorph",
 		},
 		Entrypoint: []string{"/bin/sh"},
 	}
@@ -54,7 +55,7 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	if got.SSH == nil || got.SSH.Port != 22 {
 		t.Errorf("SSH = %+v", got.SSH)
 	}
-	if got.Tailscale == nil || got.Tailscale.AuthKey != "tskey-auth-abc" {
+	if got.Tailscale == nil || got.Tailscale.AuthKey != "tskey-auth-abc" || got.Tailscale.ControlURL != "http://headscale" {
 		t.Errorf("Tailscale = %+v", got.Tailscale)
 	}
 	if len(got.Entrypoint) != 1 || got.Entrypoint[0] != "/bin/sh" {
