@@ -56,6 +56,15 @@ rescue system running without a terminal. SSH uses the configured credentials
 over both the tailnet and host network; the Tailscale auth key only enrolls
 the rescue node. For Headscale, set `tailscale.server` to its control URL.
 
+For password authentication, set `services.xmorph.ssh.passwordFile` to a
+quoted runtime path such as `"/run/secrets/xmorph-password"`. Provision that
+file separately, owned by root with mode `0600`; do not use a Nix path
+literal or `builtins.readFile`, which would copy the secret into the Nix
+store. The pivot wrapper reads the file at startup, stripping trailing
+newlines. A missing or empty file aborts startup; the build-cache service
+does not read it. The former inline `ssh.password` option is rejected
+because it exposed the root password in a world-readable store script.
+
 ## Manual setup
 
 Service files ship in the release tarball under

@@ -85,6 +85,12 @@ nix run .#build
 
 The VM check exercises:
 
+- Malformed and option-restricted SSH keys abort before destructive lifecycle
+  actions, even when a valid password accompanies malformed keys. The original
+  OS remains usable and plain-key authentication succeeds after a valid pivot.
+- A root-only runtime SSH password file, including shell-special characters;
+  public module wrappers omit its contents. Missing or empty files abort
+  startup, while the build-cache service works without that SSH credential.
 - Invalid auth keys and unavailable control: the real service aborts before
   pivot, leaving the original OS usable; a valid key subsequently succeeds.
 - A tagged rescue identity, default hostname/MagicDNS name and custom control

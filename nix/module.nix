@@ -18,7 +18,6 @@ let
   sshArgs =
     lib.optional cfg.ssh.enable "--ssh.enable"
     ++ lib.optional (cfg.ssh.enable && cfg.ssh.port != null) "--ssh.port=${toString cfg.ssh.port}"
-    ++ lib.optional (cfg.ssh.enable && cfg.ssh.password != null) "--ssh.password=${cfg.ssh.password}"
     ++ lib.optional (cfg.ssh.enable && cfg.ssh.authorizedKeys != null) "--ssh.authorized-keys=${cfg.ssh.authorizedKeys}";
 
   buildArgs = [ "build" ] ++ commonArgs;
@@ -38,16 +37,30 @@ let
   # would be passed literally. Wrap the invocation in a small script that
   # reads the key file at runtime (keeping the secret out of the nix store)
   # and appends it as a real argument.
-  mkExecStart = name: baseArgs: pkgs.writeShellScript name ''
+  mkExecStart = name: baseArgs: passwordFile: pkgs.writeShellScript name ''
     set -euo pipefail
     ${lib.optionalString needAuthKey
       ''authkey="$(cat ${lib.escapeShellArg (toString cfg.tailscale.authKeyFile)})"''}
+    ${lib.optionalString (passwordFile != null) ''
+      password="$(cat ${lib.escapeShellArg passwordFile})"
+      if [ -z "$password" ]; then
+        echo "SSH password file is empty" >&2
+        exit 1
+      fi
+    ''}
     exec ${cfg.package}/bin/xmorph ${lib.escapeShellArgs baseArgs} ${
       lib.optionalString needAuthKey ''--tailscale.authkey="$authkey"''
+    } ${
+      lib.optionalString (passwordFile != null) ''--ssh.password="$password"''
     }
   '';
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "xmorph" "ssh" "password" ]
+      "Use services.xmorph.ssh.passwordFile with a root-readable runtime file; inline passwords expose the root credential in the Nix store.")
+  ];
+
   options.services.xmorph = {
     enable = lib.mkEnableOption "xmorph rescue pivot service";
 
@@ -113,16 +126,22 @@ in
         description = "SSH port (default: 22).";
       };
 
-      password = lib.mkOption {
+      passwordFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "SSH root password. Null generates a random one.";
+        description = ''
+          Runtime path to a root-only file containing the SSH password, with an
+          optional trailing newline. Use a quoted path outside the Nix store;
+          the file is read only when starting the pivot service. Missing or
+          empty files abort startup. Null generates a password if no usable
+          authorized keys are configured.
+        '';
       };
 
       authorizedKeys = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "SSH authorized public keys (inline).";
+        description = "SSH authorized public keys (inline, one per line). Key options are unsupported and rejected before pivot.";
       };
     };
 
@@ -166,7 +185,8 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
 
-        ExecStart = mkExecStart "xmorph-pivot-start" pivotArgs;
+        ExecStart = mkExecStart "xmorph-pivot-start" pivotArgs
+          (if cfg.ssh.enable then cfg.ssh.passwordFile else null);
 
         CacheDirectory = "xmorph";
         RuntimeDirectory = "xmorph";
@@ -190,7 +210,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = mkExecStart "xmorph-cache-warm-start" buildArgs;
+        ExecStart = mkExecStart "xmorph-cache-warm-start" buildArgs null;
         CacheDirectory = "xmorph";
         RuntimeDirectory = "xmorph";
         TimeoutStartSec = "infinity";

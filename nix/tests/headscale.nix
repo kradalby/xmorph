@@ -58,12 +58,13 @@ pkgs.testers.nixosTest {
     };
     target = { nodes, ... }: {
       imports = [ xmorph-module ];
+      environment.etc."xmorph-preflight-rootfs.tar.gz".source = rootfs nodes.headscale.networking.primaryIPAddress;
       services.xmorph = {
         enable = true;
         package = xmorph-package;
         images = [ ];
         rootfs = [ (toString (rootfs nodes.headscale.networking.primaryIPAddress)) ];
-        warmupBuildCache = false;
+        warmupBuildCache = true;
         entrypoint = "/usr/local/bin/xmorph";
         command = [ "idle" ];
         workDir = "/run/xmorph-root";
@@ -71,7 +72,7 @@ pkgs.testers.nixosTest {
         ssh = {
           enable = true;
           port = 2222;
-          password = "rescue-password";
+          passwordFile = "/run/xmorph ssh password";
           authorizedKeys = keys.snakeOilEd25519PublicKey;
         };
         tailscale = {
@@ -86,6 +87,7 @@ pkgs.testers.nixosTest {
         serviceConfig.StandardOutput = lib.mkForce "file:/dev/ttyS0";
         serviceConfig.StandardError = lib.mkForce "file:/dev/ttyS0";
       };
+      systemd.services.xmorph-cache-warm.wantedBy = lib.mkForce [ ];
       networking.firewall.allowedTCPPorts = [ 2222 ];
       virtualisation.memorySize = 2048;
     };
@@ -93,7 +95,9 @@ pkgs.testers.nixosTest {
 
   testScript = ''
     import json
+    import secrets
     import shlex
+    import time
 
     def nodes():
         return json.loads(headscale.succeed("headscale nodes list -o json"))
@@ -134,6 +138,57 @@ pkgs.testers.nixosTest {
     for machine in [direct, relay]:
         machine.succeed("install -m600 ${keys.snakeOilEd25519PrivateKey} /root/allowed")
         machine.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /root/denied")
+
+    try:
+        with subtest("invalid SSH credentials abort before destructive lifecycle actions"):
+            authorized = ${builtins.toJSON keys.snakeOilEd25519PublicKey}
+            for keys, password in [("not-a-key", None), ("not-a-key", "valid-password"),
+                                   ('command="/bin/false" ' + authorized, None)]:
+                before = len(target.get_console_log())
+                args = "--ssh.authorized-keys=" + shlex.quote(keys)
+                if password is not None:
+                    args += " --ssh.password=" + shlex.quote(password)
+                target.succeed("systemd-run --unit=xmorph-invalid-ssh --property=StandardOutput=file:/dev/ttyS0 "
+                               "--property=StandardError=file:/dev/ttyS0 ${xmorph-package}/bin/xmorph pivot "
+                               "--systemd-mode --force --rootfs /etc/xmorph-preflight-rootfs.tar.gz "
+                               "--work-dir /run/xmorph-preflight --entrypoint /usr/local/bin/xmorph --cmd idle " + args)
+                for _ in range(60):
+                    output = target.get_console_log()[before:]
+                    assert "pivot_root complete" not in output, output
+                    if "invalid SSH authorized_keys" in output:
+                        break
+                    time.sleep(1)
+                else:
+                    raise AssertionError("missing SSH preflight rejection: " + output)
+                assert "preparing pivot mounts" not in output, output
+                assert "terminating non-essential processes" not in output, output
+                target.succeed("systemctl is-active multi-user.target && test -d /nix/store && test ! -e /mnt/oldroot/nix")
+                target.wait_until_succeeds("systemctl is-failed xmorph-invalid-ssh")
+                target.succeed("systemctl reset-failed xmorph-invalid-ssh")
+    except Exception:
+        target.crash()
+        raise
+
+    with subtest("module reads private SSH password only at pivot startup"):
+        wrapper = target.succeed("systemctl show xmorph-pivot -p ExecStart --value").split("path=", 1)[1].split(" ;", 1)[0]
+        wrapper_text = target.succeed("${pkgs.util-linux}/bin/runuser -u nobody -- cat " + shlex.quote(wrapper))
+        assert "rescue-password" not in wrapper_text
+        target.succeed(f"umask 077; printf '%s' {shlex.quote(key)} > /run/xmorph-authkey")
+        target.succeed("systemctl start xmorph-cache-warm")
+        for empty in [False, True]:
+            if empty:
+                target.succeed("install -m600 /dev/null '/run/xmorph ssh password'")
+            before = len(target.get_console_log())
+            target.fail("systemctl start xmorph-pivot")
+            target.succeed("systemctl is-active multi-user.target && test -d /nix/store")
+            output = target.get_console_log()[before:]
+            assert "pivot starting" not in output, output
+            assert ("SSH password file is empty" if empty else "No such file or directory") in output, output
+            target.succeed("systemctl reset-failed xmorph-pivot")
+        password = secrets.token_hex(16) + " ' $HOME `false`"
+        target.succeed("umask 077; printf '%s\\n' " + shlex.quote(password) + " > '/run/xmorph ssh password'")
+        target.fail("${pkgs.util-linux}/bin/runuser -u nobody -- cat '/run/xmorph ssh password'")
+        assert password not in wrapper_text
 
     with subtest("invalid key aborts before pivot"):
         preflight_failure("tskey-auth-invalid")
@@ -178,7 +233,7 @@ pkgs.testers.nixosTest {
             healthy(relay, ip)
             healthy(relay, ip6)
             for machine in [direct, relay]:
-                assert "pivoted-root" in machine.succeed(ssh(ip, password="rescue-password"))
+                assert "pivoted-root" in machine.succeed(ssh(ip, password=password))
                 out = machine.fail(ssh(ip, password="wrong-password") + " 2>&1")
                 assert "Permission denied" in out, out
                 out = machine.fail(ssh(ip, key="/root/denied") + " 2>&1")
