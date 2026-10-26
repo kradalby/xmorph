@@ -118,6 +118,87 @@ func TestSSHRejectsAuthorizedKeyOptions(t *testing.T) {
 	}
 }
 
+func TestSSHCertificateAuthentication(t *testing.T) {
+	key, _ := genClientKey(t)
+	authority, _ := genClientKey(t)
+	for _, tc := range []struct {
+		name     string
+		after    uint64
+		before   uint64
+		critical map[string]string
+		pty      bool
+		host     bool
+		tampered bool
+		password string
+		wantErr  string
+	}{
+		{name: "permitted", before: ssh.CertTimeInfinity},
+		{name: "permitted with PTY", before: ssh.CertTimeInfinity, pty: true},
+		{name: "forced command", before: ssh.CertTimeInfinity, critical: map[string]string{"force-command": "/bin/false"}, wantErr: "unsupported SSH certificate critical options"},
+		{name: "source address", before: ssh.CertTimeInfinity, critical: map[string]string{"source-address": "192.0.2.1/32"}, wantErr: "unsupported SSH certificate critical options"},
+		{name: "restricted with password", before: ssh.CertTimeInfinity, critical: map[string]string{"source-address": "192.0.2.1/32"}, password: "valid-password", wantErr: "unsupported SSH certificate critical options"},
+		{name: "expired", before: 1, wantErr: "expired"},
+		{name: "future", after: ssh.CertTimeInfinity - 1, before: ssh.CertTimeInfinity, wantErr: "not yet valid"},
+		{name: "host certificate", before: ssh.CertTimeInfinity, host: true, wantErr: "not a user certificate"},
+		{name: "invalid signature", before: ssh.CertTimeInfinity, tampered: true, wantErr: "signature does not verify"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert := &ssh.Certificate{Key: key.PublicKey(), CertType: ssh.UserCert,
+				ValidPrincipals: []string{"root"}, ValidAfter: tc.after, ValidBefore: tc.before,
+				Permissions: ssh.Permissions{CriticalOptions: tc.critical}}
+			if tc.pty {
+				cert.Extensions = map[string]string{"permit-pty": ""}
+			}
+			if tc.host {
+				cert.CertType = ssh.HostCert
+			}
+			if err := cert.SignCert(rand.Reader, authority); err != nil {
+				t.Fatal(err)
+			}
+			if tc.tampered {
+				cert.Serial++
+			}
+			cfg := &SSHConfig{AuthorizedKeys: string(ssh.MarshalAuthorizedKey(cert)), Password: tc.password}
+			if _, err := buildServerConfig(cfg); err != nil {
+				if tc.wantErr == "" || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("unexpected configuration rejection: %v", err)
+				}
+				return
+			}
+			signer, err := ssh.NewCertSigner(cert, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := serveSSHTest(t, cfg)
+			c := dialClient(t, addr, []ssh.AuthMethod{ssh.PublicKeys(signer)})
+			sess, err := c.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			if tc.wantErr != "" {
+				out, err := sess.CombinedOutput("echo unrestricted-certificate-exec")
+				t.Fatalf("invalid certificate was accepted: arbitrary exec returned %q, error %v", out, err)
+			}
+			if err := sess.RequestPty("xterm", 24, 80, nil); (err == nil) != tc.pty {
+				t.Errorf("PTY request = %v, permit-pty = %v", err, tc.pty)
+			}
+			out, err := sess.CombinedOutput("echo permitted-certificate-exec")
+			if err != nil || strings.TrimSpace(string(out)) != "permitted-certificate-exec" {
+				t.Fatalf("permitted certificate exec: %q, %v", out, err)
+			}
+			other, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+				User: "other", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 3 * time.Second,
+			})
+			if err == nil {
+				other.Close()
+				t.Error("certificate authorized a principal it does not contain")
+			}
+		})
+	}
+}
+
 func TestSSHExitStatusPropagates(t *testing.T) {
 	signer, authorized := genClientKey(t)
 	addr := serveSSHTest(t, &SSHConfig{AuthorizedKeys: authorized})

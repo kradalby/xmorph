@@ -127,10 +127,16 @@ func buildServerConfig(cfg *SSHConfig) (*ssh.ServerConfig, error) {
 		return nil, fmt.Errorf("sshd: parse authorized_keys: %w", err)
 	}
 	if len(keys) > 0 {
-		sc.PublicKeyCallback = func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
+		sc.PublicKeyCallback = func(conn ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
 			gotBytes := k.Marshal()
 			for _, want := range keys {
 				if bytes.Equal(gotBytes, want.Marshal()) {
+					if cert, ok := k.(*ssh.Certificate); ok {
+						if err := (&ssh.CertChecker{}).CheckCert(conn.User(), cert); err != nil {
+							return nil, err
+						}
+						return &cert.Permissions, nil
+					}
 					return nil, nil
 				}
 			}
@@ -174,6 +180,22 @@ func ParseAuthorizedKeys(s string) ([]ssh.PublicKey, error) {
 		if len(options) != 0 {
 			return nil, fmt.Errorf("line %d: unsupported authorized_keys options", i+1)
 		}
+		if cert, ok := k.(*ssh.Certificate); ok {
+			if cert.CertType != ssh.UserCert {
+				return nil, fmt.Errorf("line %d: not a user certificate", i+1)
+			}
+			if len(cert.CriticalOptions) != 0 {
+				return nil, fmt.Errorf("line %d: unsupported SSH certificate critical options", i+1)
+			}
+			// Preflight has no login name; authentication rechecks the requested principal.
+			principal := ""
+			if len(cert.ValidPrincipals) > 0 {
+				principal = cert.ValidPrincipals[0]
+			}
+			if err := (&ssh.CertChecker{}).CheckCert(principal, cert); err != nil {
+				return nil, fmt.Errorf("line %d: %w", i+1, err)
+			}
+		}
 		out = append(out, k)
 	}
 	return out, nil
@@ -209,7 +231,7 @@ func handleConn(conn net.Conn, sc *ssh.ServerConfig) {
 			slog.Warn("sshd: channel accept", "err", err)
 			continue
 		}
-		go handleSession(ch, chReqs)
+		go handleSession(ch, chReqs, sconn.Permissions)
 	}
 }
 
@@ -230,7 +252,7 @@ type (
 	exitMsg struct{ Status uint32 }
 )
 
-func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
+func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request, permissions *ssh.Permissions) {
 	defer ch.Close()
 
 	var (
@@ -243,6 +265,12 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
 		case "pty-req":
+			if permissions != nil {
+				if _, ok := permissions.Extensions["permit-pty"]; !ok {
+					_ = req.Reply(false, nil)
+					continue
+				}
+			}
 			var m ptyReqMsg
 			if err := ssh.Unmarshal(req.Payload, &m); err != nil {
 				_ = req.Reply(false, nil)
