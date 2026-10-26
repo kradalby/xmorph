@@ -73,7 +73,7 @@
           doCheck = false;
           buildPhase = ''
             runHook preBuild
-            for pkg in pivot oci; do
+            for pkg in pivot oci postpivot; do
               go test -c -o "xmorph-$pkg.test" "./internal/$pkg"
             done
             runHook postBuild
@@ -262,6 +262,7 @@
               # tar-extraction containment + setuid, exercised as root — the
               # privilege level at which a symlink escape would actually bite.
               machine.succeed("xmorph-oci.test -test.v")
+              machine.succeed("xmorph-postpivot.test -test.run '^TestReapOrphansWithoutChildLists$' -test.v")
             '';
           };
 

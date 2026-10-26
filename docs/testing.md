@@ -64,6 +64,10 @@ require; mounting `$HOME/go/pkg/mod` read-only reuses your module cache so
 the run is offline and fast. This is a convenience for local development —
 CI relies on the NixOS VM test in tier 2, not on `container`.
 
+The pivot VM also runs orphan-reaper regressions in private mount namespaces.
+They mask optional per-thread child lists with missing or empty fixtures while
+retaining real process metadata and waitable children.
+
 ## Headscale and post-pivot SSH
 
 The `nixos-headscale` check uses the published Headscale `testkit` and

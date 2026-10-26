@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"go.calculon.tech/xmorph/internal/process"
 )
 
 // lockedWriter serializes concurrent writes to w. os/exec copies the
@@ -185,34 +185,25 @@ func waitManagedChild(cmd *exec.Cmd) error {
 func reapOrphans() {
 	childWaits.Lock()
 	defer childWaits.Unlock()
-	tasks, err := os.ReadDir("/proc/self/task")
+	// Per-thread child lists are optional and can omit siblings during waits.
+	children, err := process.Scan()
 	if err != nil {
 		slog.Warn("list child processes", "err", err)
 		return
 	}
-	for _, task := range tasks {
-		children, err := os.ReadFile("/proc/self/task/" + task.Name() + "/children")
-		if err != nil {
-			if !os.IsNotExist(err) {
-				slog.Warn("read child processes", "err", err)
-			}
+	for _, child := range children {
+		if child.PPID != os.Getpid() || child.PID <= 0 || childWaits.managed[child.PID] != nil {
 			continue
 		}
-		for _, child := range strings.Fields(string(children)) {
-			pid, err := strconv.Atoi(child)
-			if err != nil || pid <= 0 || childWaits.managed[pid] != nil {
+		for {
+			_, err := syscall.Wait4(child.PID, nil, syscall.WNOHANG, nil)
+			if err == syscall.EINTR {
 				continue
 			}
-			for {
-				_, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
-				if err == syscall.EINTR {
-					continue
-				}
-				if err != nil && err != syscall.ECHILD {
-					slog.Warn("reap child process", "pid", pid, "err", err)
-				}
-				break
+			if err != nil && err != syscall.ECHILD {
+				slog.Warn("reap child process", "pid", child.PID, "err", err)
 			}
+			break
 		}
 	}
 }
