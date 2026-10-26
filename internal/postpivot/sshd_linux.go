@@ -312,7 +312,12 @@ func runSession(ch ssh.Channel, reqs <-chan *ssh.Request, cmd *exec.Cmd, term st
 	cmd.Env = append(os.Environ(), env...)
 
 	if wantPty {
-		f, err := pty.Start(cmd)
+		var f *os.File
+		err := startManagedChild(cmd, func() error {
+			var err error
+			f, err = pty.Start(cmd)
+			return err
+		})
 		if err != nil {
 			fmt.Fprintf(ch, "exec: %v\r\n", err)
 			sendExitStatus(ch, 127)
@@ -344,7 +349,7 @@ func runSession(ch ssh.Channel, reqs <-chan *ssh.Request, cmd *exec.Cmd, term st
 		}
 		cmd.Stdout = ch
 		cmd.Stderr = ch.Stderr()
-		if err := cmd.Start(); err != nil {
+		if err := startManagedChild(cmd, cmd.Start); err != nil {
 			stdin.Close()
 			fmt.Fprintf(ch.Stderr(), "exec: %v\n", err)
 			sendExitStatus(ch, 127)
@@ -358,7 +363,7 @@ func runSession(ch ssh.Channel, reqs <-chan *ssh.Request, cmd *exec.Cmd, term st
 	}
 
 	status := uint32(0)
-	if err := cmd.Wait(); err != nil {
+	if err := waitManagedChild(cmd); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			status = uint32(ee.ExitCode())

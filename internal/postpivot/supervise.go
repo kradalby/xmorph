@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,7 +84,7 @@ func Supervise(opts SuperviseOptions) (exitCode int, err error) {
 		cmd.Env = opts.Env
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := startManagedChild(cmd, cmd.Start); err != nil {
 		return 127, fmt.Errorf("exec %s: %w", opts.Argv[0], err)
 	}
 
@@ -94,7 +96,7 @@ func Supervise(opts SuperviseOptions) (exitCode int, err error) {
 	defer signal.Stop(sigCh)
 
 	doneCh := make(chan error, 1)
-	go func() { doneCh <- cmd.Wait() }()
+	go func() { doneCh <- waitManagedChild(cmd) }()
 
 	for {
 		select {
@@ -151,14 +153,66 @@ func ServeUntilSignal() int {
 	}
 }
 
-// reapOrphans waits for any remaining children (non-blocking) so the
-// kernel doesn't accumulate zombies under us.
+var childWaits = struct {
+	sync.Mutex
+	managed map[int]*exec.Cmd
+}{managed: make(map[int]*exec.Cmd)}
+
+func startManagedChild(cmd *exec.Cmd, start func() error) error {
+	// Registration must precede reaping, even when a child exits during Start.
+	childWaits.Lock()
+	defer childWaits.Unlock()
+	if err := start(); err != nil {
+		return err
+	}
+	childWaits.managed[cmd.Process.Pid] = cmd
+	return nil
+}
+
+func waitManagedChild(cmd *exec.Cmd) error {
+	err := cmd.Wait()
+	childWaits.Lock()
+	defer childWaits.Unlock()
+	// Wait releases the PID; a new child may already have reused it.
+	if childWaits.managed[cmd.Process.Pid] == cmd {
+		delete(childWaits.managed, cmd.Process.Pid)
+	}
+	return err
+}
+
+// reapOrphans leaves managed exit statuses to exec.Cmd.Wait. Enumerating
+// children lets unowned zombies be reaped even while a managed child waits.
 func reapOrphans() {
-	for {
-		var status syscall.WaitStatus
-		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
-		if pid <= 0 || err != nil {
-			return
+	childWaits.Lock()
+	defer childWaits.Unlock()
+	tasks, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		slog.Warn("list child processes", "err", err)
+		return
+	}
+	for _, task := range tasks {
+		children, err := os.ReadFile("/proc/self/task/" + task.Name() + "/children")
+		if err != nil {
+			if !os.IsNotExist(err) {
+				slog.Warn("read child processes", "err", err)
+			}
+			continue
+		}
+		for _, child := range strings.Fields(string(children)) {
+			pid, err := strconv.Atoi(child)
+			if err != nil || pid <= 0 || childWaits.managed[pid] != nil {
+				continue
+			}
+			for {
+				_, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
+				if err == syscall.EINTR {
+					continue
+				}
+				if err != nil && err != syscall.ECHILD {
+					slog.Warn("reap child process", "pid", pid, "err", err)
+				}
+				break
+			}
 		}
 	}
 }
