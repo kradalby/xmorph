@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"tailscale.com/tsnet"
 )
@@ -13,20 +12,14 @@ import (
 type PostPivotOptions struct {
 	// Hostname must match what PreAuth used.
 	Hostname string
-	// ControlURL must match the server used by PreAuth; empty uses Tailscale.
-	ControlURL string
 }
 
 // NewPostPivotServer opens tsnet from the state persisted by PreAuth
 // and brings the node up on the tailnet. Caller owns Close.
 func NewPostPivotServer(ctx context.Context, opts PostPivotOptions) (*tsnet.Server, error) {
-	// Control loss must not block kernel SSH or entrypoint startup indefinitely.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	srv := &tsnet.Server{
-		Dir:        "/var/lib/tailscale",
-		Hostname:   opts.Hostname,
-		ControlURL: opts.ControlURL,
+		Dir:      "/var/lib/tailscale",
+		Hostname: opts.Hostname,
 	}
 	if _, err := srv.Up(ctx); err != nil {
 		srv.Close()

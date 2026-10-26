@@ -92,7 +92,6 @@ func bindSSH(fs *pflag.FlagSet, cfg *Config) {
 	// unreachable machine behind is the failure this whole path exists to
 	// avoid. See ensureSSHUsable.
 	fs.StringVar(&cfg.SSHPassword, "ssh.password", "", "root password (default: three random words, printed before and after the pivot)")
-	fs.StringVar(&cfg.SSHPasswordFile, "ssh.password-file", "", "read root password from a private runtime file instead of argv (trailing newlines removed; cannot combine with --ssh.password)")
 	fs.StringVar(&cfg.SSHAuthorizedKeys, "ssh.authorized-keys", "", "authorized public keys (inline)")
 }
 
@@ -102,7 +101,7 @@ func bindTailscale(fs *pflag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.TailscaleImage, "tailscale.image", DefaultTailscaleImg, "deprecated: ignored under tsnet (kept for backward compatibility)")
 	fs.StringVar(&cfg.TailscaleAuthkey, "tailscale.authkey", "", "Tailscale auth key (starts Tailscale via tsnet)")
 	fs.StringVar(&cfg.TailscaleServer, "tailscale.server", "", "Tailscale coordination server URL (for Headscale)")
-	fs.StringVar(&cfg.TailscaleArgs, "tailscale.args", "", "legacy Tailscale arguments; only --hostname=NAME is used (default: <host>-xmorph)")
+	fs.StringVar(&cfg.TailscaleArgs, "tailscale.args", "", "extra arguments for tailscale up (default: --ssh --hostname=<host>-xmorph)")
 }
 
 // Normalize applies post-parse adjustments that the Zig version performs
@@ -144,14 +143,14 @@ func (c *Config) Normalize(fs *pflag.FlagSet, positional []string, envLookup fun
 		c.Force = true
 	}
 
-	// --ssh.{password,password-file,authorized-keys,enable} imply port 22 unless port
+	// --ssh.{password,authorized-keys,enable} imply port 22 unless port
 	// was set explicitly. Mirrors src/config.zig:273-283.
 	if c.SSHPort == nil {
 		needPort := false
 		if c.SSHEnable != nil && *c.SSHEnable {
 			needPort = true
 		}
-		if c.SSHPassword != "" || c.SSHPasswordFile != "" {
+		if c.SSHPassword != "" {
 			needPort = true
 		}
 		if c.SSHAuthorizedKeys != "" {

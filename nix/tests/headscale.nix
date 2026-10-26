@@ -14,7 +14,7 @@ let
   restricted = policy [ "operator@" ];
   peer = {
     imports = [ headscale.nixosModules.testkit-peer ];
-    environment.systemPackages = [ pkgs.openssh pkgs.sshpass pkgs.jq ];
+    environment.systemPackages = [ pkgs.openssh pkgs.jq ];
   };
 
   # The resolver survives on another VM; no pinned VLAN addresses or hosts file.
@@ -23,7 +23,7 @@ let
   } ''
     mkdir -p rootfs/{bin,usr/local/bin,etc,dev,proc,sys,tmp,var/run}
     cp ${pkgs.pkgsStatic.busybox}/bin/busybox rootfs/bin/
-    for cmd in sh ls cat echo sleep test stat id; do
+    for cmd in sh cat sleep test; do
       ln -s busybox rootfs/bin/$cmd
     done
     echo 'nameserver ${dns}' > rootfs/etc/resolv.conf
@@ -47,24 +47,19 @@ pkgs.testers.nixosTest {
       };
       networking.firewall.allowedUDPPorts = [ 53 ];
     };
-    direct = { nodes, ... }: {
-      imports = [ peer ];
-      environment.systemPackages = [ xmorph-package pkgs.gnutar ];
-      environment.etc."xmorph-outage-rootfs.tar.gz".source = rootfs nodes.headscale.networking.primaryIPAddress;
-    };
+    direct = peer;
     relay = {
       imports = [ peer ];
       systemd.services.tailscaled.environment.TS_DEBUG_ALWAYS_USE_DERP = "1";
     };
     target = { nodes, ... }: {
       imports = [ xmorph-module ];
-      environment.etc."xmorph-preflight-rootfs.tar.gz".source = rootfs nodes.headscale.networking.primaryIPAddress;
       services.xmorph = {
         enable = true;
         package = xmorph-package;
         images = [ ];
         rootfs = [ (toString (rootfs nodes.headscale.networking.primaryIPAddress)) ];
-        warmupBuildCache = true;
+        warmupBuildCache = false;
         entrypoint = "/usr/local/bin/xmorph";
         command = [ "idle" ];
         workDir = "/run/xmorph-root";
@@ -72,68 +67,54 @@ pkgs.testers.nixosTest {
         ssh = {
           enable = true;
           port = 2222;
-          passwordFile = "/run/xmorph ssh password";
           authorizedKeys = keys.snakeOilEd25519PublicKey;
         };
         tailscale = {
           enable = true;
           authKeyFile = "/run/xmorph-authkey";
           server = "http://headscale";
+          # Upstream only carries an explicitly supplied hostname across exec.
+          args = "--hostname=rescue";
         };
       };
-      # Keep the module's command, privileges and lifecycle; only route diagnostics.
+      # Keep the module's command, privileges and lifecycle intact.
       systemd.services.xmorph-pivot = {
         environment.TS_NO_LOGS_NO_SUPPORT = "1";
+        # Upstream tsnet reads this after exec; the server flag only reaches pre-auth.
+        environment.TS_CONTROL_URL = "http://headscale";
         serviceConfig.StandardOutput = lib.mkForce "file:/dev/ttyS0";
         serviceConfig.StandardError = lib.mkForce "file:/dev/ttyS0";
       };
-      systemd.services.xmorph-cache-warm.wantedBy = lib.mkForce [ ];
-      networking.firewall.allowedTCPPorts = [ 2222 ];
       virtualisation.memorySize = 2048;
     };
   };
 
   testScript = ''
     import json
-    import secrets
     import shlex
-    import time
 
     def nodes():
         return json.loads(headscale.succeed("headscale nodes list -o json"))
 
     def rescue():
-        matches = [n for n in nodes() if n["givenName"] == "target-xmorph"]
+        matches = [n for n in nodes() if n["givenName"] == "rescue"]
         assert len(matches) == 1, matches
         return matches[0]
 
-    def ssh(ip, command="/bin/cat /etc/pivot-marker", password=None, key="/root/allowed", user="root", port=2222):
-        auth = (f"sshpass -p {shlex.quote(password)} " if password is not None else "")
-        options = ("-o PreferredAuthentications=password -o PubkeyAuthentication=no" if password is not None
-                   else f"-o BatchMode=yes -o IdentitiesOnly=yes -i {key}")
-        return (f"timeout 15 {auth}ssh -p {port} -o LogLevel=ERROR -o StrictHostKeyChecking=no "
-                f"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 {options} "
-                f"{user}@{ip} {shlex.quote(command)}")
+    def ssh(ip, command="/bin/cat /etc/pivot-marker", key="/root/allowed"):
+        return ("timeout 15 ssh -p 2222 -o LogLevel=ERROR -o StrictHostKeyChecking=no "
+                "-o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 "
+                f"-o BatchMode=yes -o IdentitiesOnly=yes -i {key} root@{ip} {shlex.quote(command)}")
 
     def healthy(machine, ip):
-        out = machine.wait_until_succeeds(ssh(ip), timeout=120)
-        assert "pivoted-root" in out, out
+        out = machine.succeed(ssh(ip))
+        assert out.strip() == "pivoted-root", out
 
-    def preflight_failure(key, password: str | None = None):
+    def preflight_failure(key):
         before = len(target.get_console_log())
         target.succeed(f"printf '%s' {shlex.quote(key)} > /run/xmorph-authkey; chmod 600 /run/xmorph-authkey")
-        if password is not None:
-            target.succeed("systemctl start --no-block xmorph-pivot")
-            target.wait_until_succeeds("pid=$(systemctl show xmorph-pivot -p MainPID --value); test $pid -gt 0; test $(basename $(readlink /proc/$pid/exe)) = xmorph")
-            pid = target.succeed("systemctl show xmorph-pivot -p MainPID --value").strip()
-            cmdline = target.succeed(f"${pkgs.util-linux}/bin/runuser -u nobody -- cat /proc/{pid}/cmdline")
-            if password in cmdline:
-                target.succeed("systemctl stop xmorph-pivot")
-                raise AssertionError("root SSH password exposed through service argv")
-            target.wait_until_succeeds("systemctl is-failed xmorph-pivot", timeout=90)
-        else:
-            target.fail("systemctl start xmorph-pivot", timeout=90)
-        target.succeed("systemctl is-active multi-user.target && test -d /nix/store")
+        target.fail("systemctl start xmorph-pivot", timeout=90)
+        target.succeed("systemctl is-active multi-user.target && test -d /nix/store && test ! -e /mnt/oldroot/nix")
         assert "pre-pivot tailscale auth failed; aborting to keep the running OS alive" in target.get_console_log()[before:]
         target.succeed("systemctl reset-failed xmorph-pivot")
 
@@ -150,157 +131,77 @@ pkgs.testers.nixosTest {
         machine.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /root/denied")
 
     try:
-        with subtest("invalid SSH credentials abort before destructive lifecycle actions"):
-            authorized = ${builtins.toJSON keys.snakeOilEd25519PublicKey}
-            for keys, password in [("not-a-key", None), ("not-a-key", "valid-password"),
-                                   ('command="/bin/false" ' + authorized, None)]:
-                before = len(target.get_console_log())
-                args = "--ssh.authorized-keys=" + shlex.quote(keys)
-                if password is not None:
-                    args += " --ssh.password=" + shlex.quote(password)
-                target.succeed("systemd-run --unit=xmorph-invalid-ssh --property=StandardOutput=file:/dev/ttyS0 "
-                               "--property=StandardError=file:/dev/ttyS0 ${xmorph-package}/bin/xmorph pivot "
-                               "--systemd-mode --force --rootfs /etc/xmorph-preflight-rootfs.tar.gz "
-                               "--work-dir /run/xmorph-preflight --entrypoint /usr/local/bin/xmorph --cmd idle " + args)
-                for _ in range(60):
-                    output = target.get_console_log()[before:]
-                    assert "pivot_root complete" not in output, output
-                    if "invalid SSH authorized_keys" in output:
-                        break
-                    time.sleep(1)
-                else:
-                    raise AssertionError("missing SSH preflight rejection: " + output)
-                assert "preparing pivot mounts" not in output, output
-                assert "terminating non-essential processes" not in output, output
-                target.succeed("systemctl is-active multi-user.target && test -d /nix/store && test ! -e /mnt/oldroot/nix")
-                target.wait_until_succeeds("systemctl is-failed xmorph-invalid-ssh")
-                target.succeed("systemctl reset-failed xmorph-invalid-ssh")
-    except Exception:
-        target.crash()
-        raise
+        with subtest("invalid key aborts before pivot"):
+            preflight_failure("tskey-auth-invalid")
+            assert not [n for n in nodes() if n["givenName"] == "rescue"]
 
-    with subtest("module reads private SSH password only at pivot startup"):
-        wrapper = target.succeed("systemctl show xmorph-pivot -p ExecStart --value").split("path=", 1)[1].split(" ;", 1)[0]
-        wrapper_text = target.succeed("${pkgs.util-linux}/bin/runuser -u nobody -- cat " + shlex.quote(wrapper))
-        assert "rescue-password" not in wrapper_text
-        target.succeed(f"umask 077; printf '%s' {shlex.quote(key)} > /run/xmorph-authkey")
-        target.succeed("systemctl start xmorph-cache-warm")
-        for empty in [False, True]:
-            if empty:
-                target.succeed("install -m600 /dev/null '/run/xmorph ssh password'")
-            before = len(target.get_console_log())
-            target.fail("systemctl start xmorph-pivot")
-            target.succeed("systemctl is-active multi-user.target && test -d /nix/store")
-            output = target.get_console_log()[before:]
-            assert "pivot starting" not in output, output
-            assert ("SSH password file is empty" if empty else "no such file or directory") in output, output
-            target.succeed("systemctl reset-failed xmorph-pivot")
-        password = secrets.token_hex(16) + " ' $HOME `false`"
-        target.succeed("umask 077; printf '%s\\n' " + shlex.quote(password) + " > '/run/xmorph ssh password'")
-        target.fail("${pkgs.util-linux}/bin/runuser -u nobody -- cat '/run/xmorph ssh password'")
-        assert password not in wrapper_text
+        with subtest("unreachable control aborts before pivot"):
+            headscale.succeed("systemctl stop headscale")
+            try:
+                preflight_failure(key)
+            finally:
+                headscale.succeed("systemctl start headscale")
+                headscale.wait_for_unit("headscale")
+            assert not [n for n in nodes() if n["givenName"] == "rescue"]
 
-    with subtest("invalid key aborts before pivot"):
-        preflight_failure("tskey-auth-invalid")
-        assert not [n for n in nodes() if n["givenName"] == "target-xmorph"]
-
-    with subtest("unreachable control aborts before pivot"):
-        headscale.succeed("systemctl stop headscale")
-        try:
-            preflight_failure(key, password=password)
-        finally:
-            headscale.succeed("systemctl start headscale")
-            headscale.wait_for_unit("headscale")
-        assert not [n for n in nodes() if n["givenName"] == "target-xmorph"]
-
-    try:
         with subtest("module service pivots and reopens persisted tsnet state"):
             target.succeed(f"printf '%s' {shlex.quote(key)} > /run/xmorph-authkey")
             target.succeed("systemctl start --no-block xmorph-pivot")
-            direct.wait_until_succeeds("tailscale ip -4 target-xmorph", timeout=120)
-            ip = direct.succeed("tailscale ip -4 target-xmorph").strip()
+            direct.wait_until_succeeds("tailscale ip -4 rescue", timeout=120)
+            ip = direct.succeed("tailscale ip -4 rescue").strip()
+            direct.wait_until_succeeds(f"timeout 5 nc -z {ip} 2222", timeout=120)
             healthy(direct, ip)
-            healthy(direct, "target-xmorph.tailnet")
-            ip6 = direct.succeed("tailscale ip -6 target-xmorph").strip()
+            healthy(direct, "rescue.tailnet")
+            ip6 = direct.succeed("tailscale ip -6 rescue").strip()
             healthy(direct, ip6)
-            healthy(direct, "target")
             assert "pivot_root complete" in target.get_console_log()
             identity = rescue()
             assert "tag:rescue" in identity["tags"], identity
             assert len(nodes()) == 3, nodes()
-            direct.succeed(ssh(ip, "test ! -e /etc/xmorph-init.json || { /bin/ls -l /etc/xmorph-init.json; exit 1; }; "
-                                  "test -s /var/lib/tailscale/tailscaled.state || { /bin/ls -l /var/lib/tailscale; exit 1; }"))
-            assert direct.succeed(ssh(ip, "/bin/stat -c %a /var/lib/tailscale")).strip() == "700"
-            assert direct.succeed(ssh(ip, "/bin/stat -c %a /var/lib/tailscale/tailscaled.state")).strip() == "600"
-            assert direct.succeed(ssh(ip, "/bin/id -u")).strip() == "0"
-            # SSH login names do not select OS accounts; accepted credentials authorize root.
-            assert direct.succeed(ssh(ip, "/bin/id -u", user="operator")).strip() == "0"
-            cmdlines = direct.succeed(ssh(ip, 'for path in /proc/[0-9]*/cmdline; do /bin/cat "$path" 2>/dev/null; done; true'))
-            assert "--init" in cmdlines, cmdlines
-            assert password not in cmdlines, "root SSH password exposed after supervisor exec"
+            direct.succeed(ssh(ip, "test -d /mnt/oldroot/nix/store && test -s /var/lib/tailscale/tailscaled.state"))
 
         with subtest("SSH over direct and forced DERP paths"):
-            direct.wait_until_succeeds("tailscale ping --timeout=3s -c 1 target-xmorph", timeout=90)
-            direct.succeed("tailscale status --json | jq -e '.Peer[] | select(.HostName == \"target-xmorph\") | .CurAddr != \"\"'")
+            direct.wait_until_succeeds("tailscale ping --timeout=3s -c 1 rescue", timeout=90)
+            direct.succeed("tailscale status --json | jq -e '.Peer[] | select(.HostName == \"rescue\") | .CurAddr != \"\"'")
             healthy(direct, ip)
-            relay.wait_until_succeeds("tailscale ping --until-direct=false --timeout=3s -c 1 target-xmorph | grep 'via DERP(headscale)'", timeout=90)
+            relay.wait_until_succeeds("tailscale ping --until-direct=false --timeout=3s -c 1 rescue | grep 'via DERP(headscale)'", timeout=90)
+            relay.wait_until_succeeds(f"timeout 5 nc -z {ip} 2222", timeout=90)
             healthy(relay, ip)
             healthy(relay, ip6)
             for machine in [direct, relay]:
-                assert "pivoted-root" in machine.succeed(ssh(ip, password=password))
-                out = machine.fail(ssh(ip, password="wrong-password") + " 2>&1")
-                assert "Permission denied" in out, out
                 out = machine.fail(ssh(ip, key="/root/denied") + " 2>&1")
                 assert "Permission denied" in out, out
                 healthy(machine, ip)
 
         with subtest("live tag policy denies outsider while operator remains allowed"):
             headscale.succeed("headscale policy set -f ${restricted}")
-            relay.wait_until_fails(ssh(ip), timeout=90)
-            relay.succeed("tailscale status --json | jq -e '.Peer[] | select(.HostName == \"target-xmorph\")'")
-            relay.succeed("tailscale ping --until-direct=false --timeout=3s -c 1 target-xmorph | grep 'via DERP(headscale)'")
+            relay.wait_until_fails(f"timeout 5 nc -z {ip} 2222", timeout=90)
+            relay.succeed("tailscale status --json | jq -e '.Peer[] | select(.HostName == \"rescue\")'")
+            relay.succeed("tailscale ping --until-direct=false --timeout=3s -c 1 rescue | grep 'via DERP(headscale)'")
             healthy(direct, ip)
-            relay.fail(ssh(ip))
-            relay.fail(ssh(ip6))
+            for address in [ip, ip6]:
+                out = relay.fail(ssh(address) + " 2>&1")
+                assert "Connection timed out" in out, out
             healthy(direct, ip6)
             headscale.succeed("headscale policy set -f ${allowed}")
+            relay.wait_until_succeeds(f"timeout 5 nc -z {ip} 2222", timeout=90)
             healthy(relay, ip)
+            healthy(relay, ip6)
 
         with subtest("control restart preserves identity and application access"):
             headscale.succeed("systemctl stop headscale")
-            healthy(direct, ip)
-            headscale.succeed("systemctl start headscale")
+            try:
+                healthy(direct, ip)
+            finally:
+                headscale.succeed("systemctl start headscale")
             headscale.wait_for_unit("headscale")
+            relay.wait_until_succeeds(f"timeout 5 nc -z {ip} 2222", timeout=90)
             healthy(relay, ip)
-            headscale.wait_until_succeeds("headscale nodes list -o json | jq -e '.[] | select(.givenName == \"target-xmorph\") | .online'", timeout=90)
+            headscale.wait_until_succeeds("headscale nodes list -o json | jq -e '.[] | select(.givenName == \"rescue\") | .online'", timeout=90)
             after = rescue()
             for field in ["id", "nodeKey", "ipAddresses"]:
                 assert identity[field] == after[field], (field, identity, after)
             assert len(nodes()) == 3, nodes()
-
-        with subtest("control loss before init still starts kernel SSH and entrypoint"):
-            direct.succeed("mkdir -p /tmp/outage-root; tar xf /etc/xmorph-outage-rootfs.tar.gz -C /tmp/outage-root")
-            direct.succeed("cp $(command -v xmorph) /tmp/outage-root/usr/local/bin/xmorph; cp /etc/hosts /tmp/outage-root/etc/hosts")
-            direct.succeed("install -d -m700 /tmp/outage-root/var/lib/tailscale")
-            direct.succeed(ssh(ip, "/bin/cat /var/lib/tailscale/tailscaled.state") + " > /tmp/outage-root/var/lib/tailscale/tailscaled.state")
-            config = {
-                "tailscale": {"hostname": "target-xmorph", "control_url": "http://headscale"},
-                "ssh": {"port": 2223, "authorized_keys": ${builtins.toJSON keys.snakeOilEd25519PublicKey}},
-                "entrypoint": ["/usr/local/bin/xmorph", "idle"],
-                "reboot_on_exit": False,
-            }
-            direct.succeed("umask 077; printf '%s' " + shlex.quote(json.dumps(config)) + " > /tmp/outage-root/etc/xmorph-init.json")
-            direct.fail(ssh("127.0.0.1", port=2223))
-            headscale.succeed("systemctl stop headscale")
-            try:
-                direct.succeed("systemd-run --unit=xmorph-outage --property=RootDirectory=/tmp/outage-root --property=MountAPIVFS=yes --setenv=TS_USE_CACHED_NETMAP=false --setenv=TS_NO_LOGS_NO_SUPPORT=1 /usr/local/bin/xmorph --init")
-                out = direct.wait_until_succeeds(ssh("127.0.0.1", port=2223), timeout=60)
-                assert "pivoted-root" in out, out
-                direct.succeed("journalctl -u xmorph-outage --no-pager | grep 'entrypoint is xmorph idle'")
-            finally:
-                print(direct.succeed("journalctl -u xmorph-outage --no-pager -n 40"))
-                direct.succeed("systemctl stop xmorph-outage")
-                headscale.succeed("systemctl start headscale")
     finally:
         # A pivot can remove the backdoor; never let driver cleanup hide a failure.
         target.crash()

@@ -22,29 +22,26 @@ broken on disk without rebooting from external media.
 - The fix doesn't need a pivoted environment — just SSH into the running
   OS.
 
-## Quick start: SSH over Tailscale
+## Quick start: rescue with Tailscale SSH
 
 ```sh
 sudo xmorph pivot \
   --image docker.io/library/alpine:latest \
-  --entrypoint /usr/local/bin/xmorph --cmd idle \
-  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey tskey-auth-xxxxx \
   --force
 ```
 
 What this does:
 
-1. Pulls Alpine into a tmpfs in RAM and copies the xmorph binary into it
+1. Pulls Alpine + the Tailscale image into a tmpfs in RAM
 2. On a systemd host, relocates itself into a transient scope so your SSH
    session (or a `run0`/`systemd-run` wrapper) can't take it down when it
    ends — see [Surviving your SSH session](#surviving-your-ssh-session)
-3. Authenticates the embedded tsnet node before stopping services; a failed
-   login aborts while the original OS is still running
+3. Coordinates with systemd / OpenRC / SysVinit to stop services
 4. `pivot_root`s into the new rootfs
-5. Reopens the saved tsnet state and starts ordinary SSH; the node appears
-   as `<hostname>-xmorph` on your tailnet
-6. Keeps the old root at `/mnt/oldroot` and waits in `xmorph idle`
+5. Brings up Tailscale in the new rootfs; the node appears as
+   `<hostname>-xmorph` on your tailnet
+6. Mounts the old root at `/mnt/oldroot`
 
 Your SSH session drops when the pivot tears down the old OS's networking —
 that's expected. You reconnect to the rescue node over Tailscale.
@@ -55,21 +52,10 @@ From your laptop:
 ssh root@<hostname>-xmorph
 ```
 
-The rescue node has its own identity; xmorph does not migrate the host's
-tailscaled state. Its tsnet state survives the pivot and exec, but lives in
-the temporary rootfs and is lost on reboot. The default name is
-`<hostname>-xmorph`; override it with `--tailscale.args=--hostname=rescue`.
-
-This is ordinary SSH with public-key or password authentication, not
-Tailscale SSH. The auth key enrolls the node; it does not enable SSH.
-Tailnet packet policy must allow the SSH port, and clients still need the
-configured SSH credentials. All accepted SSH logins run as root. The same
-server also listens on the host network interfaces.
-
-After the pivot, tailnet startup has a 30-second deadline. If control is
-unreachable and no cached network map can be used, xmorph logs the error
-and continues with kernel SSH and the entrypoint. Tailnet access is then
-unavailable for that rescue session; use the host's routable address.
+If the host had Tailscale running before xmorph started, the rescue
+node inherits the host's tailnet identity (same machine key, same ACLs,
+same MagicDNS name) thanks to state migration — the `-xmorph` suffix
+just makes it visually obvious in the admin UI which mode you're in.
 
 Use an [ephemeral auth key](https://tailscale.com/kb/1085/auth-keys)
 so the rescue node auto-deletes from your tailnet when xmorph exits.
@@ -124,7 +110,7 @@ apk add --no-cache \
   rsync curl wget rclone \
   vim less htop strace lsof tcpdump \
   openssh-client
-exec /usr/local/bin/xmorph idle
+exec /bin/sh
 ```
 
 ### Overlay layout
@@ -141,15 +127,16 @@ sudo xmorph pivot \
   --image docker.io/library/alpine:latest \
   --rootfs ./overlay/ \
   --entrypoint /entrypoint.sh \
-  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey tskey-auth-xxxxx \
   --force
 ```
 
-`xmorph build` caches assembled images at `/var/cache/xmorph` (override with
-`--cache-dir`). Registry-image pivots do not read that cache and still need
-registry access, even after a successful build. The entrypoint also runs
-`apk add` after each pivot.
+The image is cached at `/var/cache/xmorph` (override with
+`--cache-dir`). Subsequent pivots with the same base image skip the
+download and apk install, so the second pivot onward is instant.
+
+For a fleet: pre-warm the cache on boot with `xmorph build` (see the
+[systemd integration](#systemd-integration) section).
 
 ## Headscale
 
@@ -158,18 +145,13 @@ Tailscale's hosted control plane, point `--tailscale.server` at it:
 
 ```sh
 sudo xmorph pivot --image alpine \
-  --entrypoint /usr/local/bin/xmorph --cmd idle \
-  --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --tailscale.authkey <key-from-headscale> \
   --tailscale.server https://headscale.example.com \
   --force
 ```
 
-The explicit control URL is used for both pre-pivot authentication and
-post-pivot tsnet startup. Put tags on the Headscale auth key and allow
-traffic to those tags in packet policy. Only `--hostname=NAME` is consumed
-from the legacy `--tailscale.args`; `--advertise-tags` and `--ssh` there do
-not configure tsnet or the SSH server.
+This appends `--login-server=https://headscale.example.com` to the
+`tailscale up` invocation in the new rootfs.
 
 ## Rescue without Tailscale
 
@@ -179,7 +161,6 @@ on a serial console:
 ```sh
 # Plain SSH on port 22 with your key
 sudo xmorph pivot --image alpine \
-  --entrypoint /usr/local/bin/xmorph --cmd idle \
   --ssh.port 22 \
   --ssh.authorized-keys "$(cat ~/.ssh/id_ed25519.pub)" \
   --force
@@ -191,30 +172,11 @@ sudo xmorph pivot --image alpine --force
 The `--ssh.enable` path stands up a small pure-Go OpenSSH server inside
 the pivoted rootfs on the given port (default 22) with an ephemeral
 ed25519 host key. Auth is public-key (from `--ssh.authorized-keys`,
-plain `authorized_keys` entries or pinned user certificates, one per line)
-and/or password (`--ssh.password-file`). Sessions run `/bin/sh` as root — the rescue rootfs
+standard `authorized_keys` format, one per line) and/or password
+(`--ssh.password`). Sessions run `/bin/sh` as root — the rescue rootfs
 has no user database.
 
-Key options such as `command=`, `from=`, `restrict`, and `no-pty` are not
-supported. xmorph rejects them and malformed key entries before pivoting;
-it never silently drops restrictions. Blank lines and comments are ignored.
-
-Pinned user certificates must have valid signatures and validity periods.
-The exact configured certificate is trusted, not every certificate signed by
-its CA. Certificate principals restrict the SSH login name; successful logins
-still run as root. A certificate permits a PTY only with `permit-pty`.
-Certificate critical options, including `force-command` and `source-address`,
-are unsupported and rejected before pivot, even when a password is also set.
-
-Use `--ssh.password-file /run/secrets/xmorph-password` with a root-only file
-to keep its contents out of process arguments before and after pivot.
-xmorph reads it before preparing the rootfs, strips trailing LF newlines,
-and passes the password through its private init configuration. Missing or
-empty files abort. `--ssh.password` remains available for inline passwords,
-which are visible in process arguments; combining it with a password file
-is rejected. `--ssh.enable=false` disables SSH and skips credential loading.
-
-Give it no usable keys or password and xmorph generates a root password: three random words
+Give it neither and xmorph generates a root password: three random words
 from the EFF short wordlist, joined by hyphens, printed as a banner both
 before the pivot and again after it.
 
@@ -277,9 +239,8 @@ xmorph also notices when it's running over SSH:
   short grace window — `Ctrl-C` to abort. On those hosts, run it under a
   detachment mechanism of your own (`systemd-run`, `setsid`, `nohup`, `tmux`).
 
-Make sure you have a way back in before you pivot: configure SSH with
-`--ssh.authorized-keys` or `--ssh.password-file`, and add `--tailscale.authkey`
-if you need tailnet access. `--log-dir` (default
+Make sure you have a way back in before you pivot: set `--tailscale.authkey`
+or `--ssh.port`, or you'll lock yourself out. `--log-dir` (default
 `/var/log`) writes `xmorph.log` on the old root and flushes it into the new
 rootfs, so there's a breadcrumb trail either way.
 
@@ -341,18 +302,18 @@ tail /srv/xmorph/xmorph.log /srv/xmorph/entrypoint.log
 
 ## systemd integration
 
-For a configured rescue action that you can trigger remotely, install
-xmorph as a `rescue.target` unit. See [systemd integration](systemd.md) for
-the unit file and NixOS module. Once installed:
+For an always-available rescue path that you can trigger remotely without
+rebuilding the image every time, install xmorph as a `rescue.target`
+unit. See [systemd integration](systemd.md) for the unit file and NixOS
+module. Once installed:
 
 ```sh
 sudo systemctl isolate rescue.target
 ```
 
-pivots into the configured rescue rootfs. The companion
-`xmorph-cache-warm.service` populates the build cache during normal boot.
-Registry-image pivots still pull from the registry; prewarming does not
-make them offline or guarantee a particular startup time.
+pivots into the configured rescue rootfs. A `xmorph-cache-warm.service`
+runs on `multi-user.target` to pre-pull the image during normal boot, so
+the pivot itself is sub-second when you actually need it.
 
 ## See also
 

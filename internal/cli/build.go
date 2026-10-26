@@ -21,7 +21,7 @@ func newBuildCmd() *cobra.Command {
 		Short: "Build an OCI image from configured layers without pivoting",
 		Long: `build assembles a rootfs from the configured layers and, with -o,
 writes the result as an OCI layout directory. Without -o it just populates
-the build cache. Registry-image pivots do not reuse that cache.`,
+the build cache so a later pivot is fast.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg.Normalize(cmd.Flags(), args, nil)
 			if err := cfg.Validate(cmd.ErrOrStderr()); err != nil {

@@ -128,7 +128,6 @@ type Config struct {
 	SSHEnable         *bool
 	SSHPort           *uint16
 	SSHPassword       string
-	SSHPasswordFile   string
 	SSHAuthorizedKeys string
 	// SSHPasswordGenerated records that xmorph invented SSHPassword rather
 	// than the operator supplying it. It decides one thing: whether the
@@ -168,7 +167,7 @@ func (c *Config) SSHEnabled() bool {
 	if c.SSHEnable != nil {
 		return *c.SSHEnable
 	}
-	return c.SSHPort != nil || c.SSHPassword != "" || c.SSHPasswordFile != "" || c.SSHAuthorizedKeys != ""
+	return c.SSHPort != nil || c.SSHPassword != "" || c.SSHAuthorizedKeys != ""
 }
 
 // TailscaleEnabled reports whether Tailscale should be brought up.

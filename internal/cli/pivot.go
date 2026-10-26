@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -93,10 +92,6 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 	if !cfg.Force {
 		fmt.Fprintln(os.Stderr, "Refusing to pivot without --force")
 		return errors.New("confirmation required (--force)")
-	}
-	generatedPassword, err := ensureSSHUsable(cfg)
-	if err != nil {
-		return err
 	}
 
 	slog.Info("pivot starting", "layers", len(cfg.Layers), "work_dir", cfg.WorkDir,
@@ -258,6 +253,10 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 	if err := checkEntrypointSurvivesDetach(cfg, entrypoint); err != nil {
 		return err
 	}
+	generatedPassword, err := ensureSSHUsable(cfg)
+	if err != nil {
+		return err
+	}
 	if generatedPassword != "" {
 		postpivot.AnnounceSSHPassword(os.Stderr, generatedPassword, int(sshPort(cfg)))
 	}
@@ -289,7 +288,7 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 		err := tsnetauth.PreAuth(ctx, tsnetauth.PreAuthOptions{
 			RootfsPath: cfg.WorkDir,
 			AuthKey:    cfg.TailscaleAuthkey,
-			Hostname:   pivotConfig.Tailscale.Hostname,
+			Hostname:   helpers.TailscaleHostname(cfg),
 			ControlURL: cfg.TailscaleServer,
 		})
 		if err != nil {
@@ -462,10 +461,8 @@ func buildPostpivotConfig(cfg *config.Config, entrypoint string, entryArgs []str
 	}
 	if cfg.TailscaleEnabled() {
 		pc.Tailscale = &postpivot.TSConfig{
-			Hostname:   helpers.TailscaleHostname(cfg),
-			ControlURL: cfg.TailscaleServer,
-			AuthKey:    cfg.TailscaleAuthkey,
-			Args:       cfg.TailscaleArgs,
+			AuthKey: cfg.TailscaleAuthkey,
+			Args:    cfg.TailscaleArgs,
 		}
 	}
 	return pc
@@ -575,25 +572,7 @@ func ensureSSHUsable(cfg *config.Config) (generated string, err error) {
 	if !cfg.SSHEnabled() {
 		return "", nil
 	}
-	if cfg.SSHPasswordFile != "" {
-		if cfg.SSHPassword != "" {
-			return "", errors.New("cannot combine --ssh.password and --ssh.password-file")
-		}
-		data, err := os.ReadFile(cfg.SSHPasswordFile)
-		if err != nil {
-			return "", fmt.Errorf("read SSH password file: %w", err)
-		}
-		password := strings.TrimRight(string(data), "\n")
-		if password == "" {
-			return "", errors.New("SSH password file is empty")
-		}
-		cfg.SSHPassword = password
-	}
-	keys, err := postpivot.ParseAuthorizedKeys(cfg.SSHAuthorizedKeys)
-	if err != nil {
-		return "", fmt.Errorf("invalid SSH authorized_keys: %w", err)
-	}
-	if cfg.SSHPassword != "" || len(keys) != 0 {
+	if cfg.SSHPassword != "" || cfg.SSHAuthorizedKeys != "" {
 		return "", nil
 	}
 	pw, err := passphrase.New()

@@ -96,8 +96,6 @@ func TestParsePivotSSHEnable(t *testing.T) {
 		{"explicit enable", []string{"--ssh.enable"}, true, u16Ptr(22)},
 		{"explicit false", []string{"--ssh.enable=false"}, false, nil},
 		{"by password", []string{"--ssh.password=hunter2"}, true, u16Ptr(22)},
-		{"by password file", []string{"--ssh.password-file=/run/ssh-password"}, true, u16Ptr(22)},
-		{"password file with SSH disabled", []string{"--ssh.password-file=/run/ssh-password", "--ssh.enable=false"}, false, u16Ptr(22)},
 		{"by authorized-keys", []string{"--ssh.authorized-keys=ssh-ed25519 AAAA"}, true, u16Ptr(22)},
 		{"explicit port", []string{"--ssh.port=2222"}, true, u16Ptr(2222)},
 	}

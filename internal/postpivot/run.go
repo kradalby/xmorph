@@ -83,13 +83,9 @@ func Run(argv []string) int {
 
 	var tailnet TailnetListener
 	if cfg != nil && cfg.Tailscale != nil {
-		hostname := cfg.Tailscale.Hostname
-		if hostname == "" {
-			hostname = hostnameFromArgs(cfg.Tailscale.Args)
-		}
+		hostname := hostnameFromArgs(cfg.Tailscale.Args)
 		srv, err := tsnetauth.NewPostPivotServer(context.Background(), tsnetauth.PostPivotOptions{
-			Hostname:   hostname,
-			ControlURL: cfg.Tailscale.ControlURL,
+			Hostname: hostname,
 		})
 		if err != nil {
 			slog.Error("tsnet post-pivot", "err", err)

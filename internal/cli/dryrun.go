@@ -90,8 +90,6 @@ func printDryRun(w io.Writer, cfg *config.Config) {
 			fmt.Fprintf(w, "     - Auth: public key (%d configured)\n", strings.Count(strings.TrimSpace(cfg.SSHAuthorizedKeys), "\n")+1)
 		}
 		switch {
-		case cfg.SSHPasswordFile != "":
-			fmt.Fprintf(w, "     - Auth: password (read from runtime file at pivot time)\n")
 		case cfg.SSHPassword != "":
 			fmt.Fprintf(w, "     - Auth: password\n")
 		case cfg.SSHAuthorizedKeys == "":

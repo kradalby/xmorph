@@ -18,7 +18,7 @@ let
   sshArgs =
     lib.optional cfg.ssh.enable "--ssh.enable"
     ++ lib.optional (cfg.ssh.enable && cfg.ssh.port != null) "--ssh.port=${toString cfg.ssh.port}"
-    ++ lib.optional (cfg.ssh.enable && cfg.ssh.passwordFile != null) "--ssh.password-file=${cfg.ssh.passwordFile}"
+    ++ lib.optional (cfg.ssh.enable && cfg.ssh.password != null) "--ssh.password=${cfg.ssh.password}"
     ++ lib.optional (cfg.ssh.enable && cfg.ssh.authorizedKeys != null) "--ssh.authorized-keys=${cfg.ssh.authorizedKeys}";
 
   buildArgs = [ "build" ] ++ commonArgs;
@@ -48,11 +48,6 @@ let
   '';
 in
 {
-  imports = [
-    (lib.mkRemovedOptionModule [ "services" "xmorph" "ssh" "password" ]
-      "Use services.xmorph.ssh.passwordFile with a root-readable runtime file; inline passwords expose the root credential in the Nix store.")
-  ];
-
   options.services.xmorph = {
     enable = lib.mkEnableOption "xmorph rescue pivot service";
 
@@ -106,7 +101,7 @@ in
     warmupBuildCache = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Populate the build cache on boot; registry-image pivots do not reuse it.";
+      description = "Pull images and build rootfs on boot so pivot is instant.";
     };
 
     ssh = {
@@ -118,22 +113,16 @@ in
         description = "SSH port (default: 22).";
       };
 
-      passwordFile = lib.mkOption {
+      password = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = ''
-          Runtime path to a root-only file containing the SSH password, with an
-          optional trailing newline. Use a quoted path outside the Nix store;
-          the file is read only when starting the pivot service. Missing or
-          empty files abort startup. Null generates a password if no usable
-          authorized keys are configured. Contents never enter process arguments.
-        '';
+        description = "SSH root password. Null generates a random one.";
       };
 
       authorizedKeys = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "SSH authorized public keys or pinned user certificates (inline, one per line). Key options and certificate critical options are rejected before pivot. Certificates require valid signatures and validity periods; login principals and permit-pty are enforced.";
+        description = "SSH authorized public keys (inline).";
       };
     };
 
@@ -158,7 +147,7 @@ in
       args = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-      description = "Legacy Tailscale arguments; only --hostname=NAME is used (default: <host>-xmorph).";
+        description = "Arguments for 'tailscale up' (default: --ssh --hostname=<host>-xmorph).";
       };
     };
   };

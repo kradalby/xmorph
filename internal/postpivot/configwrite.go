@@ -56,14 +56,13 @@ type SSHConfig struct {
 	AuthorizedKeys    string `json:"authorized_keys,omitempty"`
 }
 
-// TSConfig carries tsnet settings across exec; authentication state lives
-// in /var/lib/tailscale. AuthKey and Args retain the legacy JSON schema.
+// TSConfig is the legacy tailscale-via-image schema. Under tsnet we
+// don't actually use these fields at re-exec time (the parent process
+// brings up tsnet pre-pivot and the state persists in /var/lib/tailscale);
+// the struct is kept so the JSON schema stays stable for ops scripts.
 type TSConfig struct {
-	Hostname string `json:"hostname,omitempty"`
-	// ControlURL must be supplied again because tsnet replaces persisted preferences.
-	ControlURL string `json:"control_url,omitempty"`
-	AuthKey    string `json:"authkey,omitempty"`
-	Args       string `json:"args,omitempty"`
+	AuthKey string `json:"authkey,omitempty"`
+	Args    string `json:"args,omitempty"`
 }
 
 // WriteConfig writes cfg as JSON to rootfsRoot + ConfigPath, creating

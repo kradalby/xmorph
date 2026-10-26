@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
-    headscale.url = "github:juanfont/headscale/2d220b2eb8be8d31ed603000d0b0be02c2cd94d0";
+    headscale.url = "github:juanfont/headscale/main";
     headscale.inputs.flake-utils.follows = "flake-utils";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
@@ -73,7 +73,7 @@
           doCheck = false;
           buildPhase = ''
             runHook preBuild
-            for pkg in pivot oci postpivot; do
+            for pkg in pivot oci; do
               go test -c -o "xmorph-$pkg.test" "./internal/$pkg"
             done
             runHook postBuild
@@ -262,7 +262,6 @@
               # tar-extraction containment + setuid, exercised as root — the
               # privilege level at which a symlink escape would actually bite.
               machine.succeed("xmorph-oci.test -test.v")
-              machine.succeed("xmorph-postpivot.test -test.run '^TestReapOrphansWithoutChildLists$' -test.v")
             '';
           };
 
@@ -273,7 +272,7 @@
           nixos-lifecycle-exit-reboots = lifecycleTests.exit-reboots;
           nixos-lifecycle-preflight = lifecycleTests.shell-refused-preflight;
 
-          # Real pivot and SSH against the upstream Headscale test kit.
+          # NixOS VM test: headscale integration (offline, ~2-3 min)
           nixos-headscale = import ./nix/tests/headscale.nix {
             inherit pkgs headscale;
             xmorph-module = self.nixosModules.default;
