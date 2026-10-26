@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -92,6 +93,10 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 	if !cfg.Force {
 		fmt.Fprintln(os.Stderr, "Refusing to pivot without --force")
 		return errors.New("confirmation required (--force)")
+	}
+	generatedPassword, err := ensureSSHUsable(cfg)
+	if err != nil {
+		return err
 	}
 
 	slog.Info("pivot starting", "layers", len(cfg.Layers), "work_dir", cfg.WorkDir,
@@ -251,10 +256,6 @@ func runPivot(ctx context.Context, cfg *config.Config, stdout interface {
 	slog.Info("entrypoint resolved", "entrypoint", entrypoint, "args", len(entryArgs))
 
 	if err := checkEntrypointSurvivesDetach(cfg, entrypoint); err != nil {
-		return err
-	}
-	generatedPassword, err := ensureSSHUsable(cfg)
-	if err != nil {
 		return err
 	}
 	if generatedPassword != "" {
@@ -573,6 +574,20 @@ func checkEntrypointSurvivesDetach(cfg *config.Config, entrypoint string) error 
 func ensureSSHUsable(cfg *config.Config) (generated string, err error) {
 	if !cfg.SSHEnabled() {
 		return "", nil
+	}
+	if cfg.SSHPasswordFile != "" {
+		if cfg.SSHPassword != "" {
+			return "", errors.New("cannot combine --ssh.password and --ssh.password-file")
+		}
+		data, err := os.ReadFile(cfg.SSHPasswordFile)
+		if err != nil {
+			return "", fmt.Errorf("read SSH password file: %w", err)
+		}
+		password := strings.TrimRight(string(data), "\n")
+		if password == "" {
+			return "", errors.New("SSH password file is empty")
+		}
+		cfg.SSHPassword = password
 	}
 	keys, err := postpivot.ParseAuthorizedKeys(cfg.SSHAuthorizedKeys)
 	if err != nil {

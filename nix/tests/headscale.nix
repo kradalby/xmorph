@@ -119,10 +119,20 @@ pkgs.testers.nixosTest {
         out = machine.wait_until_succeeds(ssh(ip), timeout=120)
         assert "pivoted-root" in out, out
 
-    def preflight_failure(key):
+    def preflight_failure(key, password: str | None = None):
         before = len(target.get_console_log())
         target.succeed(f"printf '%s' {shlex.quote(key)} > /run/xmorph-authkey; chmod 600 /run/xmorph-authkey")
-        target.fail("systemctl start xmorph-pivot", timeout=90)
+        if password is not None:
+            target.succeed("systemctl start --no-block xmorph-pivot")
+            target.wait_until_succeeds("pid=$(systemctl show xmorph-pivot -p MainPID --value); test $pid -gt 0; test $(basename $(readlink /proc/$pid/exe)) = xmorph")
+            pid = target.succeed("systemctl show xmorph-pivot -p MainPID --value").strip()
+            cmdline = target.succeed(f"${pkgs.util-linux}/bin/runuser -u nobody -- cat /proc/{pid}/cmdline")
+            if password in cmdline:
+                target.succeed("systemctl stop xmorph-pivot")
+                raise AssertionError("root SSH password exposed through service argv")
+            target.wait_until_succeeds("systemctl is-failed xmorph-pivot", timeout=90)
+        else:
+            target.fail("systemctl start xmorph-pivot", timeout=90)
         target.succeed("systemctl is-active multi-user.target && test -d /nix/store")
         assert "pre-pivot tailscale auth failed; aborting to keep the running OS alive" in target.get_console_log()[before:]
         target.succeed("systemctl reset-failed xmorph-pivot")
@@ -183,7 +193,7 @@ pkgs.testers.nixosTest {
             target.succeed("systemctl is-active multi-user.target && test -d /nix/store")
             output = target.get_console_log()[before:]
             assert "pivot starting" not in output, output
-            assert ("SSH password file is empty" if empty else "No such file or directory") in output, output
+            assert ("SSH password file is empty" if empty else "no such file or directory") in output, output
             target.succeed("systemctl reset-failed xmorph-pivot")
         password = secrets.token_hex(16) + " ' $HOME `false`"
         target.succeed("umask 077; printf '%s\\n' " + shlex.quote(password) + " > '/run/xmorph ssh password'")
@@ -197,7 +207,7 @@ pkgs.testers.nixosTest {
     with subtest("unreachable control aborts before pivot"):
         headscale.succeed("systemctl stop headscale")
         try:
-            preflight_failure(key)
+            preflight_failure(key, password=password)
         finally:
             headscale.succeed("systemctl start headscale")
             headscale.wait_for_unit("headscale")
@@ -218,12 +228,16 @@ pkgs.testers.nixosTest {
             identity = rescue()
             assert "tag:rescue" in identity["tags"], identity
             assert len(nodes()) == 3, nodes()
-            direct.succeed(ssh(ip, "test ! -e /etc/xmorph-init.json && test -s /var/lib/tailscale/tailscaled.state"))
+            direct.succeed(ssh(ip, "test ! -e /etc/xmorph-init.json || { /bin/ls -l /etc/xmorph-init.json; exit 1; }; "
+                                  "test -s /var/lib/tailscale/tailscaled.state || { /bin/ls -l /var/lib/tailscale; exit 1; }"))
             assert direct.succeed(ssh(ip, "/bin/stat -c %a /var/lib/tailscale")).strip() == "700"
             assert direct.succeed(ssh(ip, "/bin/stat -c %a /var/lib/tailscale/tailscaled.state")).strip() == "600"
             assert direct.succeed(ssh(ip, "/bin/id -u")).strip() == "0"
             # SSH login names do not select OS accounts; accepted credentials authorize root.
             assert direct.succeed(ssh(ip, "/bin/id -u", user="operator")).strip() == "0"
+            cmdlines = direct.succeed(ssh(ip, 'for path in /proc/[0-9]*/cmdline; do /bin/cat "$path" 2>/dev/null; done; true'))
+            assert "--init" in cmdlines, cmdlines
+            assert password not in cmdlines, "root SSH password exposed after supervisor exec"
 
         with subtest("SSH over direct and forced DERP paths"):
             direct.wait_until_succeeds("tailscale ping --timeout=3s -c 1 target-xmorph", timeout=90)

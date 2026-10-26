@@ -60,8 +60,10 @@ For password authentication, set `services.xmorph.ssh.passwordFile` to a
 quoted runtime path such as `"/run/secrets/xmorph-password"`. Provision that
 file separately, owned by root with mode `0600`; do not use a Nix path
 literal or `builtins.readFile`, which would copy the secret into the Nix
-store. The pivot wrapper reads the file at startup, stripping trailing
-newlines. A missing or empty file aborts startup; the build-cache service
+store. The wrapper passes only the filename; xmorph reads it before rootfs
+preparation, stripping trailing LF newlines. The password crosses the pivot
+through the private init configuration, never process arguments.
+A missing or empty file aborts startup; the build-cache service
 does not read it. The former inline `ssh.password` option is rejected
 because it exposed the root password in a world-readable store script.
 

@@ -191,13 +191,28 @@ sudo xmorph pivot --image alpine --force
 The `--ssh.enable` path stands up a small pure-Go OpenSSH server inside
 the pivoted rootfs on the given port (default 22) with an ephemeral
 ed25519 host key. Auth is public-key (from `--ssh.authorized-keys`,
-plain `authorized_keys` entries, one per line) and/or password
-(`--ssh.password`). Sessions run `/bin/sh` as root — the rescue rootfs
+plain `authorized_keys` entries or pinned user certificates, one per line)
+and/or password (`--ssh.password-file`). Sessions run `/bin/sh` as root — the rescue rootfs
 has no user database.
 
 Key options such as `command=`, `from=`, `restrict`, and `no-pty` are not
 supported. xmorph rejects them and malformed key entries before pivoting;
 it never silently drops restrictions. Blank lines and comments are ignored.
+
+Pinned user certificates must have valid signatures and validity periods.
+The exact configured certificate is trusted, not every certificate signed by
+its CA. Certificate principals restrict the SSH login name; successful logins
+still run as root. A certificate permits a PTY only with `permit-pty`.
+Certificate critical options, including `force-command` and `source-address`,
+are unsupported and rejected before pivot, even when a password is also set.
+
+Use `--ssh.password-file /run/secrets/xmorph-password` with a root-only file
+to keep its contents out of process arguments before and after pivot.
+xmorph reads it before preparing the rootfs, strips trailing LF newlines,
+and passes the password through its private init configuration. Missing or
+empty files abort. `--ssh.password` remains available for inline passwords,
+which are visible in process arguments; combining it with a password file
+is rejected. `--ssh.enable=false` disables SSH and skips credential loading.
 
 Give it no usable keys or password and xmorph generates a root password: three random words
 from the EFF short wordlist, joined by hyphens, printed as a banner both
@@ -263,7 +278,7 @@ xmorph also notices when it's running over SSH:
   detachment mechanism of your own (`systemd-run`, `setsid`, `nohup`, `tmux`).
 
 Make sure you have a way back in before you pivot: configure SSH with
-`--ssh.authorized-keys` or `--ssh.password`, and add `--tailscale.authkey`
+`--ssh.authorized-keys` or `--ssh.password-file`, and add `--tailscale.authkey`
 if you need tailnet access. `--log-dir` (default
 `/var/log`) writes `xmorph.log` on the old root and flushes it into the new
 rootfs, so there's a breadcrumb trail either way.

@@ -89,7 +89,9 @@ The VM check exercises:
   actions, even when a valid password accompanies malformed keys. The original
   OS remains usable and plain-key authentication succeeds after a valid pivot.
 - A root-only runtime SSH password file, including shell-special characters;
-  public module wrappers omit its contents. Missing or empty files abort
+  public module wrappers and process arguments omit its contents. An unprivileged
+  process reads the real service command line during blocked pre-authentication;
+  SSH inspects process arguments again after supervisor exec. Missing or empty files abort
   startup, while the build-cache service works without that SSH credential.
 - Invalid auth keys and unavailable control: the real service aborts before
   pivot, leaving the original OS usable; a valid key subsequently succeeds.
@@ -111,6 +113,10 @@ The VM check exercises:
 - Control loss before init with saved tsnet state and cached network maps
   disabled. The production binary runs in a separate root directory and must
   start kernel SSH and its idle entrypoint despite the failed tailnet startup.
+
+Loopback SSH tests also exercise pinned user certificates: unsupported critical
+options, invalid signatures and validity periods fail closed; permitted
+certificates execute commands, enforce login principals, and honor `permit-pty`.
 
 Scope follows the application: `postpivot.Run` calls `tsnet.Listen` through
 `StartSSHServer`. Passwords and authorized keys authorize root shells; SSH

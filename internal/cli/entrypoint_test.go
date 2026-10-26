@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
 	"go.calculon.tech/xmorph/internal/config"
 	"go.calculon.tech/xmorph/internal/passphrase"
 	"go.calculon.tech/xmorph/internal/postpivot"
@@ -79,6 +82,12 @@ func TestEnsureSSHUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorized := string(ssh.MarshalAuthorizedKey(signer.PublicKey()))
+	cert := &ssh.Certificate{Key: signer.PublicKey(), CertType: ssh.UserCert,
+		ValidBefore: ssh.CertTimeInfinity,
+		Permissions: ssh.Permissions{CriticalOptions: map[string]string{"force-command": "/bin/false"}}}
+	if err := cert.SignCert(rand.Reader, signer); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name          string
 		cfg           config.Config
@@ -145,6 +154,16 @@ func TestEnsureSSHUsable(t *testing.T) {
 			wantErr: "unsupported authorized_keys options",
 		},
 		{
+			name:    "restricted certificate",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: string(ssh.MarshalAuthorizedKey(cert))},
+			wantErr: "unsupported SSH certificate critical options",
+		},
+		{
+			name:    "restricted certificate with password",
+			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: string(ssh.MarshalAuthorizedKey(cert)), SSHPassword: "valid-password"},
+			wantErr: "unsupported SSH certificate critical options",
+		},
+		{
 			name:    "plain key and password do not hide restricted key",
 			cfg:     config.Config{SSHEnable: &enabled, SSHAuthorizedKeys: authorized + "no-pty " + authorized, SSHPassword: "hunter2"},
 			wantErr: "unsupported authorized_keys options",
@@ -190,6 +209,70 @@ func TestEnsureSSHUsable(t *testing.T) {
 			}
 			if n := strings.Count(got, "-") + 1; n != passphrase.DefaultWords {
 				t.Errorf("generated %q, want %d hyphenated words", got, passphrase.DefaultWords)
+			}
+		})
+	}
+}
+
+func TestSSHPasswordFile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		missing bool
+		extra   []string
+		want    string
+		wantErr string
+	}{
+		{name: "password with shell characters and trailing newline", content: " secret '$HOME `false`\n", want: " secret '$HOME `false`"},
+		{name: "embedded newline preserved", content: "first\nsecond\n\n", want: "first\nsecond"},
+		{name: "explicitly disabled ignores missing file", missing: true, extra: []string{"--ssh.enable=false"}},
+		{name: "empty", wantErr: "SSH password file is empty"},
+		{name: "only newlines", content: "\n\n", wantErr: "SSH password file is empty"},
+		{name: "missing", missing: true, wantErr: "read SSH password file"},
+		{name: "conflicting inline password", content: "file-password", extra: []string{"--ssh.password=inline"}, wantErr: "cannot combine"},
+		{name: "malformed keys still rejected", content: "file-password", extra: []string{"--ssh.authorized-keys=not-a-key"}, wantErr: "invalid SSH authorized_keys"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ssh password")
+			if !tc.missing {
+				if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.New()
+			flags := pflag.NewFlagSet("pivot", pflag.ContinueOnError)
+			config.BindPivot(flags, &cfg)
+			if err := flags.Parse(append([]string{"--ssh.password-file=" + path}, tc.extra...)); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Normalize(flags, nil, nil)
+			generated, err := ensureSSHUsable(&cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pc := buildPostpivotConfig(&cfg, "/bin/true", nil)
+			if !cfg.SSHEnabled() {
+				if generated != "" || pc.SSH != nil {
+					t.Fatal("disabled SSH acquired credentials")
+				}
+				return
+			}
+			if generated != "" || pc.SSH == nil || pc.SSH.PasswordGenerated || pc.SSH.Password != tc.want {
+				t.Fatalf("file credential not preserved as an operator password: %+v", pc.SSH)
+			}
+			root := t.TempDir()
+			if err := postpivot.WriteConfig(root, pc); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(filepath.Join(root, postpivot.ConfigPath))
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("private handoff mode: %v, %v", info, err)
 			}
 		})
 	}
