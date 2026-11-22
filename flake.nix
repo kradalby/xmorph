@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
+    nixpkgs-go.url = "github:NixOS/nixpkgs/nixos-26.05";
+    headscale.url = "github:juanfont/headscale/main";
+    headscale.inputs.flake-utils.follows = "flake-utils";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
@@ -10,7 +13,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, git-hooks }:
+  outputs = { self, nixpkgs, nixpkgs-go, flake-utils, git-hooks, headscale }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -18,24 +21,15 @@
 
         version = if (self ? shortRev) then self.shortRev else "dev";
 
-        # nixpkgs ships go 1.26.3; tailscale.com v1.100 (and our go.mod)
-        # require 1.26.4. Override by fetching upstream Go source.
-        # Bump version + hash via `nix-prefetch-url https://go.dev/dl/goX.Y.Z.src.tar.gz`
-        # then `nix hash convert --hash-algo sha256 --to sri <out>`.
-        go = pkgs.go.overrideAttrs (_old: rec {
-          version = "1.26.4";
-          src = pkgs.fetchurl {
-            url = "https://go.dev/dl/go${version}.src.tar.gz";
-            hash = "sha256-T2aKMvv8ETLmqIH7lowvHa2mMUkqM5IRc1+7JVpCYC0=";
-          };
-        });
+        # Match go.mod without moving the NixOS VM fixtures to a new nixpkgs.
+        go = nixpkgs-go.legacyPackages.${system}.go_1_27;
 
         buildGoModule = pkgs.buildGoModule.override { inherit go; };
 
         # vendorHash is reproducible from go.mod + go.sum. Update by
         # setting `vendorHash = lib.fakeHash` and rebuilding — Nix will
         # print the expected hash, which you paste back here.
-        vendorHash = "sha256-dxdoM+2hzuX7/Qg20ETTEeIXMKgukh7/HkiHtup6laY=";
+        vendorHash = "sha256-nyMI6Jc7t1auqGQWUAxvP1jvhlCN/VLlCJWsfEAj/Yc=";
 
         # From-source build for `nix build` / `nix run`. Release artifacts
         # come from goreleaser (see .goreleaser.yaml); this derivation feeds
@@ -272,7 +266,8 @@
 
           # NixOS VM test: headscale integration (offline, ~2-3 min)
           nixos-headscale = import ./nix/tests/headscale.nix {
-            inherit pkgs;
+            inherit pkgs headscale;
+            xmorph-module = self.nixosModules.default;
             lib = pkgs.lib;
             xmorph-package = xmorph;
           };
